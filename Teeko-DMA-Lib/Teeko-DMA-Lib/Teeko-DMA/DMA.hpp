@@ -838,32 +838,78 @@ public:
         return 0;
     }
 
-    // ==========================================
-    // Automated Scatter Read System
-    // ==========================================
+// ==========================================
+// Automated Scatter Read System
+// ==========================================
 
-    /// <summary>Prepares a scatter read request for a specific type.</summary>
-    template <typename T> inline void AddScatter(uint64_t address, T* outBuffer) {
-        if (!hScatter || address == 0 || !outBuffer)
-            return;
-        VMMDLL_Scatter_PrepareEx(hScatter, address, sizeof(T), (PBYTE)outBuffer,
-            nullptr);
-    }
-
-    /// <summary>Prepares a raw scatter read request.</summary>
-    inline void AddScatterRaw(uint64_t address, void* outBuffer, size_t size) {
+private:
+    /// <summary>
+    /// Internal helper: prepares one or more scatter entries to cover [address, address+size),
+    /// splitting automatically at every 4 KB page boundary so no single VMMDLL element
+    /// crosses a page. Both source address and destination pointer advance in lockstep.
+    /// No heap allocation; writes go directly into the caller-supplied output buffer.
+    /// </summary>
+    inline bool PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size)
+    {
         if (!hScatter || address == 0 || !outBuffer || size == 0)
-            return;
-        VMMDLL_Scatter_PrepareEx(hScatter, address, size, (PBYTE)outBuffer,
-            nullptr);
+            return false;
+
+        auto* out = static_cast<uint8_t*>(outBuffer);
+        uint64_t cur = address;
+        size_t   remain = size;
+
+        while (remain > 0)
+        {
+            const size_t pageOffset = static_cast<size_t>(cur & 0xFFF);
+            const size_t bytesThisPage = 0x1000 - pageOffset;
+            const size_t chunk = (remain < bytesThisPage) ? remain : bytesThisPage;
+
+            if (!VMMDLL_Scatter_PrepareEx(
+                hScatter,
+                cur,
+                static_cast<DWORD>(chunk),
+                reinterpret_cast<PBYTE>(out),
+                nullptr))
+            {
+                return false;
+            }
+
+            cur += chunk;
+            out += chunk;
+            remain -= chunk;
+        }
+
+        return true;
     }
 
-    /// <summary>Executes all prepared scatter reads.</summary>
-    inline bool ExecuteScatter() {
+public:
+    /// <summary>
+    /// Prepares a typed scatter read. Automatically splits across 4 KB page boundaries.
+    /// Returns false on invalid inputs or if any VMMDLL prepare call fails.
+    /// </summary>
+    template <typename T>
+    inline bool AddScatter(uint64_t address, T* outBuffer)
+    {
+        return PrepareScatterSplit(address, outBuffer, sizeof(T));
+    }
+
+    /// <summary>
+    /// Prepares a raw scatter read. Automatically splits across 4 KB page boundaries.
+    /// Returns false on invalid inputs or if any VMMDLL prepare call fails.
+    /// </summary>
+    inline bool AddScatterRaw(uint64_t address, void* outBuffer, size_t size)
+    {
+        return PrepareScatterSplit(address, outBuffer, size);
+    }
+
+    /// <summary>Executes all prepared scatter reads and clears the handle for reuse.</summary>
+    inline bool ExecuteScatter()
+    {
         if (!hScatter)
             return false;
 
-        if (VMMDLL_Scatter_ExecuteRead(hScatter)) {
+        if (VMMDLL_Scatter_ExecuteRead(hScatter))
+        {
             VMMDLL_Scatter_Clear(hScatter, targetPID, 0);
             return true;
         }
