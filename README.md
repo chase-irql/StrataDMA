@@ -13,6 +13,7 @@ A lightweight C++ DMA (Direct Memory Access) library wrapper around [MemProcFS](
     - Pattern scanning within specific modules (batch/queued via `QueueModuleScan` / `ExecuteModuleScans`).
     - Heap scanning support (`SigScanHeap`) for locating signatures in dynamically allocated private process memory.
 - **Anti-Cheat Bypass Helpers**: `IsCR3Valid`, `SetCR3`, and `ClearCache`.
+  `IsCR3Valid` / `SetCR3` are currently untested and may not work as expected.
 - **Module Dumping**: `DumpModule` reconstructs modules from memory to disk using a **Linear Dump** strategy (fixes Section Headers and IAT).
 - **Keyboard & Mouse Support**: Reads global keyboard state (`IsKeyDown`, `IsKeyPressed`, `IsKeyReleased`) and cursor coordinates (`GetCursorPosition`) directly from `win32kbase.sys`, with built-in debug logging.
 - **Xbox Gamepad Support**: Reads raw physical memory from the Game Input Protocol driver (`xboxgip.sys`), completely bypassing user-mode APIs, and translates the raw hardware payload into standard XInput formats on the fly.
