@@ -126,6 +126,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Teeko-DMA\deps\leechcore.h" />

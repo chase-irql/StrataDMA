@@ -1,6 +1,6 @@
 # Teeko-DMA-Lib
 
-A lightweight, header-only C++ DMA (Direct Memory Access) library wrapper around [MemProcFS](https://github.com/ufrisk/MemProcFS) (vmmdll). Designed for game hacking and security research, it simplifies memory operations, scatter reading, signature scanning, and module dumping.
+A lightweight C++ DMA (Direct Memory Access) library wrapper around [MemProcFS](https://github.com/ufrisk/MemProcFS) (vmmdll). Designed for game hacking and security research, it simplifies memory operations, scatter reading, signature scanning, and module dumping.
 
 ## Features
 
@@ -28,7 +28,9 @@ A lightweight, header-only C++ DMA (Direct Memory Access) library wrapper around
 
 1. Clone this repository.
 2. Ensure `deps/vmmdll.h` and the required libraries are in the correct paths.
-3. Include `Teeko-DMA/DMA.hpp` in your project.
+3. Include `Teeko-DMA/DMA.hpp` in your project and compile `Teeko-DMA/DMA.cpp` alongside your sources, or build/link it as a static library.
+
+`vmm.lib` and `leechcore.lib` must still be linked, and `DMA.cpp` must be compiled as part of your build.
 
 ## Usage
 
@@ -167,6 +169,8 @@ std::cout << "Cursor: " << pt.x << ", " << pt.y << std::endl;
 ### Xbox Gamepad Support
 
 Reads raw physical memory from the Game Input Protocol driver (`xboxgip.sys`), completely bypassing user-mode APIs like `xinput1_4.dll` and `gameinputsvc.exe`. The library handles the reverse-engineered layout and automatically translates the raw 10-bit hardware payload into standard XInput formats for perfect compatibility.
+
+> TODO: Investigate and fix controller support on Windows 11. Xbox controller support is currently not working on Windows 11.
 
 ```cpp
 // Initialize gamepad — locates the driver, scans for the active controller slot,
