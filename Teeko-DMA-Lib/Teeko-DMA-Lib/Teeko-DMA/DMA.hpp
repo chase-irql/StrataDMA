@@ -1,75 +1,49 @@
 #pragma once
 
-#include "deps/vmmdll.h"
-#include <fstream>
+#include "DMA.Backend.hpp"
+#include "DMA.Context.hpp"
+
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <thread>
-#include <mutex>
-#include <iostream>
-
-#pragma comment(lib, "vmm.lib")
-#pragma comment(lib, "leechcore.lib")
-
-// Standard XInput Button Bitmasks
+// Keep the familiar XInput names available without conflicting with Xinput.h.
+#ifndef XINPUT_GAMEPAD_DPAD_UP
 #define XINPUT_GAMEPAD_DPAD_UP          0x0001
 #define XINPUT_GAMEPAD_DPAD_DOWN        0x0002
 #define XINPUT_GAMEPAD_DPAD_LEFT        0x0004
 #define XINPUT_GAMEPAD_DPAD_RIGHT       0x0008
 #define XINPUT_GAMEPAD_START            0x0010
 #define XINPUT_GAMEPAD_BACK             0x0020
-#define XINPUT_GAMEPAD_LEFT_THUMB       0x0040 // Left stick click
-#define XINPUT_GAMEPAD_RIGHT_THUMB      0x0080 // Right stick click
-#define XINPUT_GAMEPAD_LEFT_SHOULDER    0x0100 // LB
-#define XINPUT_GAMEPAD_RIGHT_SHOULDER   0x0200 // RB
+#define XINPUT_GAMEPAD_LEFT_THUMB       0x0040
+#define XINPUT_GAMEPAD_RIGHT_THUMB      0x0080
+#define XINPUT_GAMEPAD_LEFT_SHOULDER    0x0100
+#define XINPUT_GAMEPAD_RIGHT_SHOULDER   0x0200
 #define XINPUT_GAMEPAD_A                0x1000
 #define XINPUT_GAMEPAD_B                0x2000
 #define XINPUT_GAMEPAD_X                0x4000
 #define XINPUT_GAMEPAD_Y                0x8000
+#endif
 
-struct HeapRegion {
-    uint64_t start;
-    uint64_t end;
-};
-
-// --- Gamepad State ---
-struct GamepadState {
-    uint16_t buttons;
-    uint8_t leftTrigger;
-    uint8_t rightTrigger;
-    int16_t thumbLX;
-    int16_t thumbLY;
-    int16_t thumbRX;
-    int16_t thumbRY;
-};
-
-class _DMA {
+class DMA {
 private:
-    VMM_HANDLE hVMM = nullptr;
-    DWORD targetPID = 0;
-
     struct ModuleData {
-        uint64_t baseAddress;
-        uint32_t size;
+        uint64_t baseAddress = 0;
+        uint32_t size = 0;
     };
 
-    std::unordered_map<std::string, ModuleData> moduleCache;
-    uint64_t mainModuleBase = 0;
-
-    VMMDLL_SCATTER_HANDLE hScatter = nullptr;
-
-    // --- Signature Scanning Helpers ---
     struct PatternByte {
-        uint8_t value;
-        bool ignore;
+        uint8_t value = 0;
+        bool ignore = false;
     };
 
     struct SigScanRequest {
@@ -78,269 +52,371 @@ private:
         bool wantsAll = false;
     };
 
+    struct ScatterReadStatus {
+        DWORD expected = 0;
+        DWORD actual = 0;
+    };
+
+    std::shared_ptr<IVmmBackend> backend;
+    VMM_HANDLE hVMM = nullptr;
+    DWORD targetPID = 0;
+    uint64_t mainModuleBase = 0;
+    std::string attachedMainModuleName;
+    std::unordered_map<std::string, ModuleData> moduleCache;
+
+    std::unique_ptr<IVmmScatterSession> legacyScatter;
+    DWORD scatterFlags = VMMDLL_FLAG_NOCACHE;
+    bool scatterHasWrites = false;
+    std::deque<ScatterReadStatus> scatterReadStatuses;
+
     std::unordered_map<std::string, std::vector<SigScanRequest>> queuedModuleScans;
     std::unordered_map<std::string, uint64_t> scanResults;
     std::unordered_map<std::string, std::vector<uint64_t>> scanResultsMulti;
 
-    struct HeapProfile {
-        bool fPrivateMemory = false;
-        DWORD VadType = 0;
-        bool valid = false;
-    };
-    HeapProfile heapProfile;
-
-    // --- Keyboard State ---
     uint64_t gafAsyncKeyStateExport = 0;
+    uint64_t gptCursorAsyncExport = 0;
     DWORD win_logon_pid = 0;
-    uint8_t state_bitmap[64] = { 0 };
-    uint8_t prev_bitmap[64] = { 0 };
-    std::atomic<bool> kb_running = false;
+    std::array<uint8_t, 64> state_bitmap{};
+    std::array<uint8_t, 64> pressed_bitmap{};
+    std::array<uint8_t, 64> released_bitmap{};
+    std::atomic<bool> kb_running{ false };
     std::thread kb_thread;
-    std::mutex kb_mutex;
-    uint8_t pressed_bitmap[64] = { 0 };
-    uint8_t released_bitmap[64] = { 0 };
+    mutable std::mutex kb_mutex;
 
     uint64_t active_controller_address = 0;
-    GamepadState currentGamepadState = { 0 };
-    std::atomic<bool> gamepad_running = false;
+    uint64_t gamepadArrayStart = 0;
+    GamepadState currentGamepadState{};
+    std::atomic<bool> gamepad_running{ false };
     std::thread gamepad_thread;
-    std::mutex gamepad_mutex;
+    mutable std::mutex gamepad_mutex;
+    DMAGamepadConfig gamepadConfig{};
+    uint16_t previousGamepadButtons = 0;
+    uint16_t pressedGamepadButtons = 0;
+    uint16_t releasedGamepadButtons = 0;
 
-    void KeyboardThread(int poll_ms = 10);
+    std::atomic<bool> processMonitorRunning{ false };
+    std::thread processMonitorThread;
+    std::string monitoredProcessName;
+    std::string monitoredMainModuleName;
+    std::function<void(const DMAProcessEvent&)> processMonitorCallback;
+    bool processMonitorAutoReattach = true;
+    int processMonitorPollMs = 500;
 
-    // Call this after InitKeyboard succeeds
-    inline void StartKeyboardThread(int poll_ms = 10) {
-        kb_running = true;
-        kb_thread = std::thread(&_DMA::KeyboardThread, this, poll_ms);
-    }
+    mutable std::mutex errorMutex;
+    std::string lastError;
 
-    /// <summary>
-    /// Stops the background keyboard polling thread.
-    /// </summary>
-    inline void StopKeyboardThread() {
-        kb_running = false;
-        if (kb_thread.joinable())
-            kb_thread.join();
-    }
+    void SetLastError(std::string message);
+    void ResetAttachmentState();
+    bool RecreateScatterHandle();
+    static std::string NormalizeName(const std::string& name);
 
-    inline void StopGamepadThread() {
-        gamepad_running = false;
-        if (gamepad_thread.joinable())
-            gamepad_thread.join();
-    }
+    void KeyboardThread(int pollMs);
+    void GamepadThread(int pollMs);
+    void StartKeyboardThread(int pollMs);
+    void StopKeyboardThread();
+    void StopGamepadThread();
+    void ProcessMonitorThread();
 
-    void GamepadThread(int poll_ms = 4);
-    std::vector<PatternByte> ParseSignature(const std::string& signature);
-    uint64_t ScanLocalBuffer(const std::vector<uint8_t>& buffer,
-        uint64_t baseAddress,
-        const std::vector<PatternByte>& pattern);
-    std::vector<uint64_t> ScanAllLocalBuffer(const std::vector<uint8_t>& buffer,
-        uint64_t baseAddress,
-        const std::vector<PatternByte>& pattern);
+    static bool ParseSignature(const std::string& signature,
+        std::vector<PatternByte>& pattern);
+    static std::vector<PatternByte> ParseSignature(const std::string& signature);
+    static uint64_t ScanLocalBuffer(const std::vector<uint8_t>& buffer,
+        uint64_t baseAddress, const std::vector<PatternByte>& pattern);
+    static std::vector<uint64_t> ScanAllLocalBuffer(
+        const std::vector<uint8_t>& buffer, uint64_t baseAddress,
+        const std::vector<PatternByte>& pattern, size_t maxResults = 0);
+
     bool CacheModule(const std::string& moduleName);
     std::vector<HeapRegion> GetHeapRegions();
-
-public:
-    _DMA() = default;
-    ~_DMA();
-
-    /// <summary>
-    /// Returns the global _DMA singleton instance.
-    /// </summary>
-    /// <remarks>
-    /// The instance is lazily initialized on first call and is guaranteed
-    /// to be thread-safe since C++11. The object has static storage duration
-    /// and is destroyed during program shutdown.
-    /// </remarks>
-    /// <returns>
-    /// Reference to the unique _DMA instance (never null).
-    /// </returns>
-    static _DMA& Get()
-    {
-        static _DMA instance;
-        return instance;
-    }
-
-    /// <summary>Initializes the VMMDLL interface with default FPGA settings.</summary>
-    bool Initialize(bool memMap = true, bool debug = false);
-
-    /// <summary>Closes all active VMMDLL handles and cleans up resources.</summary>
-    void Disconnect();
-
-    /// <summary>Attempts to find and attach to a target process by name.</summary>
-    bool Attach(const std::string& processName);
-
-    // ==========================================
-    // CR3 / DTB Management (Anti-Cheat Bypass)
-    // ==========================================
-
-    /// <summary>Verifies if the current Directory Table Base (DTB/CR3) is valid.</summary>
-    bool IsCR3Valid();
-
-    /// <summary>Manually sets the process Directory Table Base (DTB/CR3).</summary>
-    bool SetCR3(uint64_t dtb);
-
-    /// <summary>Flushes the internal VMMDLL Transport Lookaside Buffer (TLB) and memory cache.</summary>
-    bool ClearCache();
-
-    // ==========================================
-    // Module Management
-    // ==========================================
-
-    /// <summary>Retrieves the base address of a module in the target process.</summary>
-    uint64_t GetModuleBase(const std::string& moduleName);
-
-    /// <summary>Retrieves the size of a module in bytes.</summary>
-    uint32_t GetModuleSize(const std::string& moduleName);
-
-    /// <summary>Returns the base address of the main module (process executable).</summary>
-    inline uint64_t GetMainBase() const { return mainModuleBase; }
-    /// <summary>Returns the Process ID (PID) of the attached target.</summary>
-    inline DWORD GetPID() const { return targetPID; }
-
-    /// <summary>
-    /// Returns the VMM_HANDLE
-    /// </summary>
-    inline VMM_HANDLE GetVMM() const { return hVMM; }
-
-    // ==========================================
-    // Raw Memory IO & Traversal
-    // ==========================================
-
-    /// <summary>Reads raw memory from the target process.</summary>
-    bool ReadRaw(uint64_t address, void* buffer, size_t size);
-
-    /// <summary>Writes raw memory to the target process.</summary>
-    bool WriteRaw(uint64_t address, const void* buffer, size_t size);
-
-    /// <summary>
-    /// Reads a value of type T from the target process.
-    /// </summary>
-    /// <typeparam name="T">The type of data to read.</typeparam>
-    /// <param name="address">Target virtual address.</param>
-    /// <param name="flags">VMMDLL flags.</param>
-    /// <returns>The read value, or T{} on failure.</returns>
-    template <typename T> inline T Read(uint64_t address) {
-        T buffer{};
-        ReadRaw(address, &buffer, sizeof(T));
-        return buffer;
-    }
-
-    /// <summary>
-    /// Writes a value of type T to the target process.
-    /// </summary>
-    /// <typeparam name="T">The type of data to write.</typeparam>
-    /// <param name="address">Target virtual address.</param>
-    /// <param name="value">The value to write.</param>
-    /// <returns>True if the write was successful.</returns>
-    template <typename T> inline bool Write(uint64_t address, const T& value) {
-        return WriteRaw(address, &value, sizeof(T));
-    }
-
-    /// <summary>Follows a pointer chain to retrieve the final address.</summary>
-    uint64_t ReadChain(uint64_t base, const std::vector<uint64_t>& offsets);
-
-    /// <summary>Reads an ASCII string from the target process.</summary>
-    std::string ReadString(uint64_t address, size_t maxLength = 256);
-
-    /// <summary>Reads a Unicode (wide) string from the target process.</summary>
-    std::wstring ReadWString(uint64_t address, size_t maxLength = 256);
-
-    /// <summary>Resolves a relative memory address from RIP-relative instructions.</summary>
-    uint64_t ResolveRelative(uint64_t instructionAddress,
-        uint32_t offsetOffset,
-        uint32_t instructionSize);
-
-    // ==========================================
-    // Signature Scanning
-    // ==========================================
-
-    /// <summary>Reads a block of memory from the target process.</summary>
-    std::vector<uint8_t> DumpMemory(uint64_t address, size_t size,
-        ULONG64 flags = VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-
-    /// <summary>Reads a block of memory using an explicit PID.</summary>
-    std::vector<uint8_t> DumpMemoryEx(DWORD pid, uint64_t address, size_t size,
-        ULONG64 flags = VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-
-    /// <summary>Add a signature scan request to the queue.</summary>
-    void QueueModuleScan(const std::string& moduleName,
-        const std::string& scanName,
-        const std::string& signature);
-
-    /// <summary>Queue a multi-result signature scan. Use GetScanResultAll() to retrieve.</summary>
-    void QueueModuleScanAll(const std::string& moduleName,
-        const std::string& scanName,
-        const std::string& signature);
-
-    /// <summary>Execute all queued module scans.</summary>
-    void ExecuteModuleScans();
-
-    /// <summary>Retrieve the result of a previous scan.</summary>
-    uint64_t GetScanResult(const std::string& scanName);
-
-    /// <summary>Retrieve all results from a previous multi-result scan.</summary>
-    std::vector<uint64_t> GetScanResultAll(const std::string& scanName);
-
-    /// <summary>Scans the private heap of the process for a signature.</summary>
-    uint64_t SigScanHeap(const std::string& signature);
-
-    // ==========================================
-    // Automated Scatter Read System
-    // ==========================================
-
-private:
-    /// <summary>Internal helper that prepares one or more scatter entries.</summary>
     bool PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size);
 
 public:
-    /// <summary>
-    /// Prepares a typed scatter read. Automatically splits across 4 KB page boundaries.
-    /// Returns false on invalid inputs or if any VMMDLL prepare call fails.
-    /// </summary>
-    template <typename T>
-    inline bool AddScatter(uint64_t address, T* outBuffer)
+    explicit DMA(std::shared_ptr<IVmmBackend> customBackend = {});
+    ~DMA();
+    DMA(const DMA&) = delete;
+    DMA& operator=(const DMA&) = delete;
+
+    static DMA& Get()
     {
+        static DMA instance;
+        return instance;
+    }
+
+    // Legacy convenience overload. See DMAInitializationOptions for full control.
+    bool Initialize(bool memMap = true, bool debug = false);
+    bool Initialize(const DMAInitializationOptions& options);
+    void Disconnect();
+    bool IsInitialized() const noexcept
+    {
+        return backend && backend->IsInitialized();
+    }
+    bool IsAttached() const noexcept { return IsInitialized() && targetPID != 0; }
+    std::string GetLastError() const;
+    DMAVersionInfo GetVmmVersion() const;
+    uint32_t GetWindowsBuild() const;
+
+    bool Attach(const std::string& processName);
+    bool Attach(DWORD pid, const std::string& mainModuleName = {});
+    void Detach();
+    bool RefreshProcess();
+    std::vector<DWORD> FindProcessIds(const std::string& processName) const;
+    std::vector<DMAProcessInfo> GetProcesses() const;
+    bool GetProcessInfo(DWORD pid, DMAProcessInfo& info) const;
+    DMAResult<DMAProcessInfo> GetProcessInfoResult(DWORD pid = 0) const;
+    DMAResult<DMAPebInfo> GetProcessEnvironmentBlock(DWORD pid = 0,
+        bool preferWow64 = true) const;
+
+    // RecoverCR3(pid, module) also works before Attach(), which is important
+    // when an invalid DTB prevents initial module discovery.
+    bool IsCR3Valid();
+    bool SetCR3(uint64_t dtb);
+    DMAResult<DMACR3RecoveryReport> RecoverCR3(DWORD pid,
+        const std::string& validationModule,
+        const DMACR3RecoveryOptions& options = {});
+    DMAResult<DMACR3RecoveryReport> RecoverCR3(
+        const DMACR3RecoveryOptions& options = {});
+    DMAResult<DMACR3RecoveryReport> AttachWithCR3Recovery(
+        const std::string& processName,
+        const DMACR3RecoveryOptions& options = {});
+    bool ClearCache();
+
+    DMAResult<std::vector<DMAPhysicalMemoryRange>> GetPhysicalMemoryMap(
+        bool refresh = false) const;
+    DMAOperationResult ExportPhysicalMemoryMap(const std::string& outPath,
+        bool refresh = false) const;
+
+    uint64_t GetModuleBase(const std::string& moduleName);
+    uint32_t GetModuleSize(const std::string& moduleName);
+    std::vector<DMAModuleInfo> GetModules(bool refresh = false);
+    void ClearModuleCache();
+    uint64_t GetMainBase() const noexcept { return mainModuleBase; }
+    DWORD GetPID() const noexcept { return targetPID; }
+    VMM_HANDLE GetVMM() const noexcept { return hVMM; }
+    std::shared_ptr<IVmmBackend> GetBackend() const noexcept { return backend; }
+
+    // Reads are strict: success requires every requested byte to be returned.
+    bool ReadRaw(uint64_t address, void* buffer, size_t size,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE);
+    bool ReadRawEx(DWORD pid, uint64_t address, void* buffer, size_t size,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE);
+    bool WriteRaw(uint64_t address, const void* buffer, size_t size);
+    bool WriteRawEx(DWORD pid, uint64_t address, const void* buffer, size_t size);
+    // Detailed variants preserve transfer counts and backend diagnostics.
+    DMAOperationResult ReadRawResult(uint64_t address, void* buffer, size_t size,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE);
+    DMAOperationResult ReadRawResultEx(DWORD pid, uint64_t address, void* buffer,
+        size_t size, ULONG64 flags = VMMDLL_FLAG_NOCACHE);
+    DMAOperationResult WriteRawResult(uint64_t address, const void* buffer, size_t size);
+    DMAOperationResult WriteRawResultEx(DWORD pid, uint64_t address,
+        const void* buffer, size_t size);
+
+    template <typename T>
+    DMAResult<T> ReadResult(uint64_t address,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+            "DMA reads require a trivially copyable type");
+        DMAResult<T> result;
+        result.operation = ReadRawResult(address, &result.value, sizeof(T), flags);
+        return result;
+    }
+
+    template <typename T>
+    bool TryRead(uint64_t address, T& value,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+            "DMA reads require a trivially copyable type");
+        value = T{};
+        return ReadRaw(address, &value, sizeof(T), flags);
+    }
+
+    template <typename T>
+    bool TryReadEx(DWORD pid, uint64_t address, T& value,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+            "DMA reads require a trivially copyable type");
+        value = T{};
+        return ReadRawEx(pid, address, &value, sizeof(T), flags);
+    }
+
+    template <typename T>
+    T Read(uint64_t address, ULONG64 flags = VMMDLL_FLAG_NOCACHE)
+    {
+        T value{};
+        TryRead(address, value, flags);
+        return value;
+    }
+
+    template <typename T>
+    bool Write(uint64_t address, const T& value)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+            "DMA writes require a trivially copyable type");
+        return WriteRaw(address, &value, sizeof(T));
+    }
+
+    uint64_t ReadChain(uint64_t base, const std::vector<uint64_t>& offsets);
+    bool TryReadChain(uint64_t base, const std::vector<uint64_t>& offsets,
+        uint64_t& result);
+    std::string ReadString(uint64_t address, size_t maxLength = 256);
+    std::wstring ReadWString(uint64_t address, size_t maxLength = 256);
+    uint64_t ResolveRelative(uint64_t instructionAddress,
+        uint32_t offsetOffset, uint32_t instructionSize);
+    bool VirtualToPhysical(uint64_t virtualAddress, uint64_t& physicalAddress) const;
+    bool PrefetchPages(const std::vector<uint64_t>& addresses) const;
+    // pid == 0 selects the current attachment. KernelContext adds VMMDLL's
+    // kernel-memory PID flag to the selected session process.
+    DMAMemoryContext ProcessContext(DWORD pid = 0,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE) const;
+    DMAMemoryContext KernelContext(DWORD sessionPid = 0,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE) const;
+    DMAFrameContext CreateFrameContext(DWORD pid = 0,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE) const;
+    DMAScatterBatch CreateScatterBatch(DWORD pid = 0,
+        DWORD flags = VMMDLL_FLAG_NOCACHE) const;
+
+    // Native VMMDLL allocations are copied into owning C++ value types.
+    DMAResult<std::vector<DMAMemoryRegion>> GetMemoryRegions(
+        const DMAMemoryRegionFilter& filter = {}) const;
+    DMAResult<std::vector<DMAModuleSection>> GetModuleSections(
+        const std::string& moduleName) const;
+    DMAResult<std::vector<DMAExportInfo>> GetModuleExports(
+        const std::string& moduleName) const;
+    DMAResult<std::vector<DMAImportInfo>> GetModuleImports(
+        const std::string& moduleName) const;
+    DMAResult<std::string> LoadModuleSymbols(const std::string& moduleName);
+    DMAResult<uint64_t> ResolveSymbol(const std::string& symbolModule,
+        const std::string& symbol) const;
+    DMAResult<DMASymbolInfo> LookupSymbol(const std::string& symbolModule,
+        uint64_t addressOrOffset) const;
+    DMAResult<uint32_t> GetSymbolTypeSize(const std::string& symbolModule,
+        const std::string& typeName) const;
+    DMAResult<uint32_t> GetSymbolChildOffset(const std::string& symbolModule,
+        const std::string& typeName, const std::string& childName) const;
+
+    // DiffSnapshots requires matching PID/base/size and reports changed bytes.
+    DMAResult<DMAMemorySnapshot> CaptureSnapshot(uint64_t address, size_t size,
+        ULONG64 flags = VMMDLL_FLAG_NOCACHE) const;
+    static DMAResult<std::vector<DMAMemoryChange>> DiffSnapshots(
+        const DMAMemorySnapshot& before, const DMAMemorySnapshot& after,
+        size_t maxChanges = 0);
+
+    std::vector<uint8_t> DumpMemory(uint64_t address, size_t size,
+        ULONG64 flags = VMMDLL_FLAG_ZEROPAD_ON_FAIL);
+    std::vector<uint8_t> DumpMemoryEx(DWORD pid, uint64_t address, size_t size,
+        ULONG64 flags = VMMDLL_FLAG_ZEROPAD_ON_FAIL);
+
+    static bool IsSignatureValid(const std::string& signature);
+    static uint64_t ScanBuffer(const std::vector<uint8_t>& buffer,
+        const std::string& signature, uint64_t baseAddress = 0);
+    static std::vector<uint64_t> ScanBufferAll(
+        const std::vector<uint8_t>& buffer, const std::string& signature,
+        uint64_t baseAddress = 0, size_t maxResults = 0);
+    // Advanced patterns support nibble wildcards (A? and ?F) and typed captures.
+    static DMAResult<DMACompiledPattern> CompilePattern(
+        const std::string& signature,
+        const std::vector<DMAScanCapture>& captures = {});
+    static DMAResult<std::vector<DMAScanMatch>> ScanBufferAdvanced(
+        const std::vector<uint8_t>& buffer, const DMACompiledPattern& pattern,
+        uint64_t baseAddress = 0, const DMAScanOptions& options = {});
+    DMAResult<std::vector<DMAScanMatch>> ScanModuleAdvanced(
+        const std::string& moduleName, const DMACompiledPattern& pattern,
+        const DMAScanOptions& options = {},
+        const std::vector<std::string>& sectionNames = {});
+    // Defaults require both PE-section and live PTE permissions to be RWX.
+    DMAResult<DMACodeCaveScanReport> FindCodeCaves(
+        const std::string& moduleName, size_t minimumSize,
+        const DMACodeCaveOptions& options = {}) const;
+    void QueueModuleScan(const std::string& moduleName,
+        const std::string& scanName, const std::string& signature);
+    void QueueModuleScanAll(const std::string& moduleName,
+        const std::string& scanName, const std::string& signature);
+    bool ExecuteModuleScans();
+    uint64_t GetScanResult(const std::string& scanName) const;
+    std::vector<uint64_t> GetScanResultAll(const std::string& scanName) const;
+    void ClearScanResults();
+    uint64_t SigScanHeap(const std::string& signature);
+    std::vector<uint64_t> SigScanHeapAll(const std::string& signature,
+        size_t maxResults = 0);
+
+    template <typename T>
+    bool AddScatter(uint64_t address, T* outBuffer)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+            "Scatter reads require a trivially copyable type");
         return PrepareScatterSplit(address, outBuffer, sizeof(T));
     }
 
-    /// <summary>Prepares a raw scatter read.</summary>
     bool AddScatterRaw(uint64_t address, void* outBuffer, size_t size);
 
-    /// <summary>Executes all prepared scatter reads and clears the handle for reuse.</summary>
-    bool ExecuteScatter();
+    template <typename T>
+    bool AddScatterWrite(uint64_t address, const T& value)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+            "Scatter writes require a trivially copyable type");
+        return AddScatterWriteRaw(address, &value, sizeof(T));
+    }
 
-    /// <summary>Dumps a module from memory to disk using a Linear Dump strategy.</summary>
+    bool AddScatterWriteRaw(uint64_t address, const void* buffer, size_t size);
+    bool ExecuteScatter();
+    bool ResetScatter();
+
+    // The callback runs on the monitor thread. Stop before manually changing
+    // lifecycle state; auto-re-attachment resets process-specific caches.
+    bool StartProcessMonitor(const std::string& processName,
+        int pollIntervalMs = 500, bool autoReattach = true,
+        std::function<void(const DMAProcessEvent&)> callback = {},
+        const std::string& mainModuleName = {});
+    void StopProcessMonitor();
+    bool IsProcessMonitorRunning() const noexcept
+    {
+        return processMonitorRunning.load();
+    }
+
     bool DumpModule(const std::string& moduleName, const std::string& outPath);
 
-    // ==========================================
-    // Keyboard Support
-    // ==========================================
-
-    /// <summary>Initialize the keyboard state reader.</summary>
-    bool InitKeyboard(int poll_ms, bool debug = false);
-
-    /// <summary>Initializes the Xbox Gamepad reader.</summary>
-    bool InitGamepad(int poll_ms = 4, bool debug = false);
-
-    /// <summary>Returns a thread-safe copy of the current Gamepad State.</summary>
-    GamepadState GetGamepadState();
-
-    /// <summary>Checks if a specific XInput button bitmask is currently pressed.</summary>
-    bool IsGamepadButtonPressed(uint16_t buttonMask);
-
-    /// <summary>Check if a key is currently held down.</summary>
-    bool IsKeyDown(uint32_t vk);
-
-    /// <summary>Check if a key was just pressed since the last poll (rising edge).</summary>
+    bool InitKeyboard(int pollMs = 10, bool debug = false);
+    void StopKeyboard();
+    bool IsKeyboardInitialized() const noexcept { return kb_running.load(); }
+    bool InitGamepad(int pollMs = 4, bool debug = false);
+    bool InitGamepad(const DMAGamepadConfig& config);
+    void StopGamepad();
+    bool IsGamepadInitialized() const noexcept { return gamepad_running.load(); }
+    GamepadState GetGamepadState() const;
+    bool IsGamepadButtonPressed(uint16_t buttonMask) const;
+    bool IsGamepadButtonJustPressed(uint16_t buttonMask);
+    bool IsGamepadButtonJustReleased(uint16_t buttonMask);
+    DMANormalizedGamepadState GetNormalizedGamepadState() const;
+    bool IsKeyDown(uint32_t vk) const;
     bool IsKeyPressed(uint32_t vk);
-
-    /// <summary>Check if a key was just released since the last poll (falling edge).</summary>
     bool IsKeyReleased(uint32_t vk);
-
-    /// <summary>Reads the global mouse cursor position from win32kbase.sys.</summary>
     POINT GetCursorPosition(bool debug = false);
-
-    /// <summary>Returns the live 24-byte hardware state buffer for real-time diffing.</summary>
     std::vector<uint8_t> GetLiveGamepadBuffer(bool debug = false);
+
+    // Registry paths use VMMDLL syntax (for example HKLM\SOFTWARE\...).
+    DMAResult<std::vector<DMARegistryHiveInfo>> GetRegistryHives() const;
+    DMAResult<std::vector<DMARegistryKeyInfo>> EnumerateRegistryKeys(
+        const std::string& path) const;
+    DMAResult<std::vector<DMARegistryValue>> EnumerateRegistryValues(
+        const std::string& path) const;
+    DMAResult<DMARegistryValue> QueryRegistryValue(const std::string& path) const;
+    DMAOperationResult ReadRegistryHive(uint64_t cmHiveAddress,
+        uint32_t relativeAddress, void* buffer, size_t size,
+        ULONG64 flags = 0) const;
+    DMAOperationResult WriteRegistryHive(uint64_t cmHiveAddress,
+        uint32_t relativeAddress, const void* buffer, size_t size);
+
+    // VFS methods require DMAInitializationOptions::initializePlugins.
+    DMAResult<std::vector<DMAVfsEntry>> ListVfs(const std::string& path) const;
+    DMAResult<std::vector<uint8_t>> ReadVfsFile(const std::string& path,
+        size_t maxBytes = 64 * 1024 * 1024) const;
+    DMAOperationResult ReadVfs(const std::string& path, uint64_t offset,
+        void* buffer, size_t size) const;
+    DMAOperationResult WriteVfs(const std::string& path, uint64_t offset,
+        const void* buffer, size_t size);
 };
+
+// Compatibility alias for the original public name.
+using _DMA = DMA;

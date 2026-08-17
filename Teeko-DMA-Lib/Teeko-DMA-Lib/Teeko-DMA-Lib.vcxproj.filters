@@ -21,9 +21,48 @@
     <ClCompile Include="Teeko-DMA\DMA.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Advanced.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Backend.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Backend.Interface.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Context.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Input.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Module.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Pattern.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Scanner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.System.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Teeko-DMA\DMA.Types.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Teeko-DMA\DMA.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Teeko-DMA\DMA.Backend.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Teeko-DMA\DMA.Context.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Teeko-DMA\DMA.Types.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Teeko-DMA\deps\vmmdll.h">
@@ -36,5 +75,10 @@
   <ItemGroup>
     <Library Include="Teeko-DMA\libs\leechcore.lib" />
     <Library Include="Teeko-DMA\libs\vmm.lib" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Teeko-DMA\deps\info.db">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

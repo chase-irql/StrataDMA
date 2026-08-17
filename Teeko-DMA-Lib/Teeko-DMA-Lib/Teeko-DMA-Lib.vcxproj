@@ -72,10 +72,11 @@
   <PropertyGroup Label="UserMacros" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -84,12 +85,13 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -98,11 +100,11 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -111,13 +113,13 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <WarningLevel>Level3</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -126,18 +128,41 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Advanced.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Backend.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Backend.Interface.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Context.cpp" />
     <ClCompile Include="Teeko-DMA\DMA.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Input.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Module.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Pattern.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Scanner.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.System.cpp" />
+    <ClCompile Include="Teeko-DMA\DMA.Types.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Teeko-DMA\deps\leechcore.h" />
     <ClInclude Include="Teeko-DMA\deps\vmmdll.h" />
+    <ClInclude Include="Teeko-DMA\DMA.Backend.hpp" />
+    <ClInclude Include="Teeko-DMA\DMA.Context.hpp" />
     <ClInclude Include="Teeko-DMA\DMA.hpp" />
+    <ClInclude Include="Teeko-DMA\DMA.Types.hpp" />
   </ItemGroup>
   <ItemGroup>
     <Library Include="Teeko-DMA\libs\leechcore.lib" />
     <Library Include="Teeko-DMA\libs\vmm.lib" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Teeko-DMA\deps\info.db">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CopyRuntimeData" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)Teeko-DMA\deps\info.db"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>

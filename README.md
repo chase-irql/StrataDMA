@@ -1,198 +1,389 @@
-# Teeko-DMA-Lib
+# Teeko DMA Lib
 
-A lightweight C++ DMA (Direct Memory Access) library wrapper around [MemProcFS](https://github.com/ufrisk/MemProcFS) (vmmdll). Designed for game hacking and security research, it simplifies memory operations, scatter reading, signature scanning, and module dumping.
+A C++17 wrapper around MemProcFS/VMMDLL for authorized DMA-backed Windows
+memory inspection. The repository vendors the MemProcFS 5.16.5 and LeechCore
+headers and x64 import libraries.
 
-## Features
+Use it only on systems and processes you are authorized to inspect.
 
-- **Easy Initialization**: Simple wrapper around `VMMDLL_InitializeEx`, configurable to use memory-map files and enable debugging.
-- **Process Attachment**: Process finding and module base caching.
-- **Memory I/O**: Read/Write primitives for standard types and raw buffers.
-- **Advanced Memory Traversal**: Helpers for resolving RIP-relative addressing (`ResolveRelative`), reading strings (`ReadString`, `ReadWString`), and following multi-level pointer chains (`ReadChain`).
-- **Scatter Reading**: Efficiently batched memory reads using VMMDLL scatter functionality (`AddScatter`, `ExecuteScatter`).
-- **Signature Scanning**:
-    - Pattern scanning within specific modules (batch/queued via `QueueModuleScan` / `ExecuteModuleScans`).
-    - Heap scanning support (`SigScanHeap`) for locating signatures in dynamically allocated private process memory.
-- **Anti-Cheat Bypass Helpers**: `IsCR3Valid`, `SetCR3`, and `ClearCache`.
-  `IsCR3Valid` / `SetCR3` are currently untested and may not work as expected.
-- **Module Dumping**: `DumpModule` reconstructs modules from memory to disk using a **Linear Dump** strategy (fixes Section Headers and IAT).
-- **Keyboard & Mouse Support**: Reads global keyboard state (`IsKeyDown`, `IsKeyPressed`, `IsKeyReleased`) and cursor coordinates (`GetCursorPosition`) directly from `win32kbase.sys`, with built-in debug logging.
-- **Xbox Gamepad Support**: Reads raw physical memory from the Game Input Protocol driver (`xboxgip.sys`), completely bypassing user-mode APIs, and translates the raw hardware payload into standard XInput formats on the fly.
+## Highlights
 
-## Prerequisites
+- Configurable VMMDLL initialization with device URIs, memory maps, extra
+  arguments, plugin initialization, fallback behavior, and readable errors.
+- Attach by name or PID, process/module enumeration, monitoring, exit events,
+  optional automatic re-attachment, expanded Windows process metadata, and
+  native/WoW64 PEB inspection.
+- Strict legacy reads plus `DMAOperationResult`/`DMAResult<T>` APIs that report
+  status, PID, address, flags, and requested/transferred byte counts.
+- Explicit process and kernel memory contexts, per-frame coherent read caching,
+  page prefetch gathers, and RAII scatter batches with per-request results.
+- VAD/PTE memory-region maps and filters; module sections, imports, exports,
+  PDB symbol lookup, type sizes, and child offsets.
+- Bounded automatic CR3/DTB recovery with candidate diagnostics and rollback,
+  plus structured physical-memory-map retrieval and VMMDLL-compatible export.
+- Snapshots and byte-level diffs.
+- Compiled signature patterns with full/nibble wildcards, captures, relative
+  address transforms, alignment, nth-match selection, section scans, and
+  optional parallel scanning; code-cave discovery cross-checks PE and live PTE
+  read/write/execute permissions.
+- Registry hive/key/value access and MemProcFS VFS directory/file access.
+- PE32/PE32+ linear module dumping with bounds validation and IAT repair.
+- Experimental keyboard, cursor, and configurable Xbox controller polling,
+  including edge events, reconnect discovery, dead zones, and normalized axes.
+- An injectable backend and hardware-free mock tests.
 
-- **Hardware/Software**: A compatible DMA device (FPGA) or a software solution supported by MemProcFS.
-- **Libraries**:
-    - `vmm.dll` and `leechcore.dll` must be present in the binary directory.
-    - `vmm.lib` and `leechcore.lib` for linking.
+`DMA` is the preferred class name. `_DMA` remains as a compatibility alias.
 
-## Installation
+## Build and package
 
-1. Clone this repository.
-2. Ensure `deps/vmmdll.h` and the required libraries are in the correct paths.
-3. Include `Teeko-DMA/DMA.hpp` in your project and compile `Teeko-DMA/DMA.cpp` alongside your sources, or build/link it as a static library.
+The existing Visual Studio solution builds the example executable:
 
-`vmm.lib` and `leechcore.lib` must still be linked, and `DMA.cpp` must be compiled as part of your build.
+```powershell
+msbuild Teeko-DMA-Lib\Teeko-DMA-Lib.sln `
+  /p:Configuration=Release /p:Platform=x64
+```
 
-## Usage
+The root CMake project provides the reusable static target
+`TeekoDMA::TeekoDMA`, the example, an install layout, and mock tests:
 
-### Basic Setup
+```powershell
+cmake -S . -B build -A x64
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+cmake --install build --config Release --prefix package
+```
 
-The library exposes a singleton via `_DMA::Get()`.
+Options are `TEEKO_DMA_BUILD_EXAMPLE` and `TEEKO_DMA_BUILD_TESTS`.
+
+At runtime, place `vmm.dll` and `leechcore.dll` beside the consuming executable.
+Place `info.db` there as well when InfoDB/symbol functionality is used. The
+repository contains import libraries, not the two runtime DLLs.
+
+## Initialization and attachment
 
 ```cpp
-#include <iostream>
 #include "Teeko-DMA/DMA.hpp"
 
-auto main() -> int
-{
-    auto& dma = _DMA::Get();
+DMA dma;
+DMAInitializationOptions options;
+options.device = "fpga://algo=0";
+options.memoryMapPath = "C:\\DMA\\mmap.txt";
+options.fallbackWithoutMemoryMap = true;
+options.initializePlugins = true; // required by VFS APIs; opt-in
 
-    // arg 1: bool memMap  - use a local memory map file (mmap.txt in temp dir)
-    // arg 2: bool debug   - enable VMMDLL -v and -printf verbose logging
-    if (!dma.Initialize(true, false)) {
-        std::cout << "[-] Failed to initialize DMA!" << std::endl;
-        return -1;
+if (!dma.Initialize(options) || !dma.Attach("target.exe")) {
+    std::cerr << dma.GetLastError() << '\n';
+    return;
+}
+```
+
+An empty memory-map path uses `%TEMP%\mmap.txt`. The legacy
+`Initialize(true, false)` overload remains supported.
+
+For duplicate process names, use `FindProcessIds`, inspect each
+`DMAProcessInfo`, and call `Attach(pid)`. `GetProcesses`, `GetModules`, and
+`GetProcessInfo` expose the underlying discovery data without returning native
+VMMDLL allocations.
+
+## Process metadata, PEB, CR3, and physical ranges
+
+`DMAProcessInfo` includes the DTB/user DTB, EPROCESS, native and WoW64 PEB
+addresses, LUID, SID, integrity level, memory/system model, session, and names.
+The stable leading fields of either PEB layout can be parsed without depending
+on a private full Windows structure:
+
+```cpp
+auto process = dma.GetProcessInfoResult(); // PID 0 means current attachment
+auto peb = dma.GetProcessEnvironmentBlock(); // prefers WoW64 PEB when present
+if (peb) {
+    std::cout << std::hex << peb.value.imageBaseAddress << '\n';
+}
+```
+
+CR3 recovery may be used before attachment when an invalid DTB prevents module
+discovery. It initializes the MemProcFS procinfo plugin, waits with a bounded
+timeout, parses `\\misc\\procinfo\\dtb.txt`, tests applicable candidates against
+the module and MZ header, and restores the original DTB if none work:
+
+```cpp
+auto attached = dma.AttachWithCR3Recovery("target.exe");
+if (!attached) {
+    std::cerr << attached.operation.message << '\n';
+}
+
+// Or recover explicitly after obtaining a PID:
+auto recovered = dma.RecoverCR3(pid, "target.exe");
+```
+
+`DMACR3RecoveryOptions` controls the timeout, polling, candidate sources,
+candidate limit, header validation, and rollback. Each attempted DTB has its
+own structured result in the returned report. CR3 recovery needs `info.db` and
+the symbol-support DLLs expected by the matching MemProcFS distribution.
+
+Physical ranges can be consumed directly or exported in the two-column,
+inclusive hexadecimal format accepted by VMMDLL's `-memmap` option:
+
+```cpp
+auto ranges = dma.GetPhysicalMemoryMap(true); // true refreshes the map first
+auto exported = dma.ExportPhysicalMemoryMap("C:\\DMA\\mmap.txt");
+```
+
+## Results and memory contexts
+
+Legacy `TryRead`, `ReadRaw`, and `WriteRaw` return `bool`. New code can retain
+failure details:
+
+```cpp
+auto health = dma.ReadResult<int>(player + 0x100);
+if (!health) {
+    std::cerr << health.operation.message << " ("
+              << health.operation.transferredBytes << "/"
+              << health.operation.requestedBytes << ")\n";
+}
+
+auto process = dma.ProcessContext();
+auto system = dma.KernelContext(4); // adds PROCESS_WITH_KERNELMEMORY
+auto value = system.Read<uint64_t>(kernelAddress);
+```
+
+`DMAStatus` distinguishes invalid input, missing attachment, partial transfer,
+not-found, unsupported backend operations, I/O errors, and backend failures.
+
+For a group of reads that should stay coherent during one update:
+
+```cpp
+auto frame = dma.CreateFrameContext();
+auto gathered = frame.Gather({
+    { player + 0x100, sizeof(int) },
+    { player + 0x200, sizeof(float) * 3 }
+});
+
+// Reuses a containing gathered block instead of issuing another DMA read.
+auto cachedHealth = frame.Read<int>(player + 0x100);
+```
+
+`Gather` deduplicates and prefetches involved 4 KiB pages before capturing the
+requested blocks. A frame cache never silently refreshes; create a new frame or
+call `Clear()` when the next update begins.
+
+## Scatter batches
+
+The preferred scatter API owns its handle and is single-use:
+
+```cpp
+int health = 0;
+float position[3]{};
+auto batch = dma.CreateScatterBatch();
+batch.AddRead(player + 0x100, health);
+batch.AddRead(player + 0x200, position);
+
+auto executed = batch.Execute();
+for (const auto& request : executed.value) {
+    if (!request.operation) {
+        std::cerr << request.operation.message << '\n';
     }
-    std::cout << "[+] DMA initialized successfully!" << std::endl;
-
-    if (!dma.Attach("target_game.exe")) {
-        std::cout << "[-] Failed to attach to process" << std::endl;
-        return -2;
-    }
-
-    return 0;
 }
 ```
 
-### Reading Memory & Following Chains
+Requests are split at 4 KiB boundaries and recombined into one result per user
+request. Buffers must remain alive through `Execute`. The original
+`AddScatter`/`ExecuteScatter` API remains available for source compatibility.
+
+## Regions, modules, and symbols
 
 ```cpp
-uint64_t base = dma.GetMainBase();
-int health = dma.Read<int>(base + 0x1234);
-std::string playerName = dma.ReadString(base + 0xABCD, 32);
+DMAMemoryRegionFilter filter;
+filter.requireReadable = true;
+filter.requireWritable = true;
+filter.privateOnly = true;
+auto writablePrivate = dma.GetMemoryRegions(filter);
 
-// Resolve a RIP-relative address (e.g. from: mov rax, [rip+0x1234])
-uint64_t absoluteAddr = dma.ResolveRelative(instructionAddr, 3, 7);
+auto sections = dma.GetModuleSections("target.exe");
+auto imports = dma.GetModuleImports("target.exe");
+auto exports = dma.GetModuleExports("target.exe");
 
-// Follow a multi-level pointer chain
-uint64_t finalAddr = dma.ReadChain(base + 0x5000, { 0x10, 0x20, 0x280 });
-```
-
-### Scatter Reading (High Performance)
-
-```cpp
-struct PlayerData {
-    int health;
-    int ammo;
-    float pos[3];
-};
-
-PlayerData data;
-dma.AddScatter(playerPtr + 0x100, &data.health);
-dma.AddScatter(playerPtr + 0x104, &data.ammo);
-dma.AddScatter(playerPtr + 0x200, &data.pos);
-
-if (dma.ExecuteScatter()) {
-    std::cout << "Health: " << data.health << std::endl;
+auto pdb = dma.LoadModuleSymbols("target.exe");
+if (pdb) {
+    auto address = dma.ResolveSymbol(pdb.value, "SomeSymbol");
+    auto size = dma.GetSymbolTypeSize(pdb.value, "SomeType");
+    auto offset = dma.GetSymbolChildOffset(pdb.value, "SomeType", "Member");
 }
 ```
 
-### Signature Scanning
+VAD regions are enabled by default. Set `includePte` in the filter when PTE
+regions are also needed; duplicate/overlapping entries are intentionally
+preserved because they come from different VMMDLL maps.
 
-**Module Scanning (Batched):**
+## Snapshots and diffs
 
 ```cpp
-// Queue multiple scans — a single module dump is shared across all of them
-dma.QueueModuleScan("svchost.exe", "RegQueryDword", "40 53 48 83 EC ? 49 8B D8");
-dma.QueueModuleScan("svchost.exe", "AnotherPattern", "48 8B 05 ? ? ? ? 48 85 C0");
-
-dma.ExecuteModuleScans();
-
-uint64_t funcAddr = dma.GetScanResult("RegQueryDword");
-std::cout << "RegQueryDword: 0x" << std::hex << funcAddr << std::endl;
+auto before = dma.CaptureSnapshot(address, 0x1000);
+// ...later...
+auto after = dma.CaptureSnapshot(address, 0x1000);
+auto changes = DMA::DiffSnapshots(before.value, after.value, 100);
 ```
 
-**Heap Scanning:**
+Snapshots must have the same PID, base, and byte count. Each change contains
+the absolute address, relative offset, old byte, and new byte.
+
+## Advanced scanning
+
+Compiled patterns accept `??`, full bytes, and nibble wildcards such as `A?`
+or `?F`:
 
 ```cpp
-// Scan the entire private process heap (can be slow on large processes)
-uint64_t result = dma.SigScanHeap("48 8B 05 ? ? ? ? 48 85 C0 74 05");
+auto pattern = DMA::CompilePattern("48 8B 05 ?? ?? ?? ??", {
+    { "target", DMAScanCaptureKind::Rel32, 3, 4 }
+});
+
+DMAScanOptions scan;
+scan.alignment = 1;
+scan.parallel = true;
+scan.transformFromFirstRelativeCapture = true;
+auto matches = dma.ScanModuleAdvanced(
+    "target.exe", pattern.value, scan, { ".text" });
 ```
 
-### Memory Dumping
+`nthMatch` is one-based (`0` means all). `maxResults == 0` means unlimited.
+Numeric relative captures contain the resolved absolute address; byte captures
+retain their raw bytes. The simpler queue and `ScanBuffer(All)` APIs remain.
 
-**`DumpMemory` / `DumpMemoryEx`:**
-
-`DumpMemory` reads from the attached target process. `DumpMemoryEx` takes an explicit PID, which is required when reading kernel-space addresses (e.g. `win32k.sys`, `win32kbase.sys`) — pass the PID ORed with `VMMDLL_PID_PROCESS_WITH_KERNELMEMORY`.
-
-```cpp
-// Standard process memory dump
-std::vector<uint8_t> buf = dma.DumpMemory(address, size);
-
-// Kernel module dump (must use explicit kernel-context PID)
-std::vector<uint8_t> kbuf = dma.DumpMemoryEx(
-    csrss_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-    win32k_base, win32k_size);
-```
-
-**`DumpModule` (Linear Dump to disk):**
-
-Reconstructs a full module from memory to disk. Uses a **Linear Dump** strategy where Virtual Address == Raw Offset, which bypasses packers that manipulate section headers (e.g. VMProtect, Themida). The output loads correctly in IDA Pro.
+Code-cave scanning defaults to sections that are RWX in the PE header and also
+RWX in the live PTE map. It verifies actual memory bytes and accepts zero and
+`0xCC` padding by default:
 
 ```cpp
-if (dma.DumpModule("unityplayer.dll", "C:\\Dumps\\unityplayer_dump.dll")) {
-    std::cout << "[+] Module dumped successfully!" << std::endl;
+DMACodeCaveOptions caves;
+caves.alignment = 16;
+caves.maxResults = 20;
+auto found = dma.FindCodeCaves("target.exe", 128, caves);
+for (const auto& cave : found.value.caves) {
+    std::cout << std::hex << cave.address << " size=" << cave.size << '\n';
 }
 ```
 
-### Keyboard & Mouse Support
+Padding bytes and read chunk size are configurable. Runtime permission checks
+can be disabled explicitly, but keeping them enabled avoids treating PE flags
+alone as proof that the live pages are writable and executable.
 
-Reads keyboard state and cursor position directly from `win32kbase.sys` kernel memory, bypassing standard Windows APIs. Supports both Win10 (EAT/PDB lookup) and Win11 (csrss session sig-scan) automatically.
-
-```cpp
-// Initialize keyboard — starts a background polling thread
-// arg 1: poll interval in milliseconds
-// arg 2: bool debug — prints verbose diagnostic output to console
-if (dma.InitKeyboard(10, false)) {
-    std::cout << "[+] Keyboard initialized" << std::endl;
-}
-
-// Key state queries
-if (dma.IsKeyDown('A'))         std::cout << "A is held" << std::endl;
-if (dma.IsKeyPressed(VK_SPACE)) std::cout << "Space just pressed" << std::endl;
-if (dma.IsKeyReleased('D'))     std::cout << "D just released" << std::endl;
-
-// Cursor position (requires InitKeyboard to have run first)
-POINT pt = dma.GetCursorPosition();
-std::cout << "Cursor: " << pt.x << ", " << pt.y << std::endl;
-```
-
-### Xbox Gamepad Support
-
-Reads raw physical memory from the Game Input Protocol driver (`xboxgip.sys`), completely bypassing user-mode APIs like `xinput1_4.dll` and `gameinputsvc.exe`. The library handles the reverse-engineered layout and automatically translates the raw 10-bit hardware payload into standard XInput formats for perfect compatibility.
-
-> TODO: Investigate and fix controller support on Windows 11. Xbox controller support is currently not working on Windows 11.
+## Process monitoring
 
 ```cpp
-// Initialize gamepad — locates the driver, scans for the active controller slot,
-// and spins up a background polling thread.
-// arg 1: poll interval in milliseconds (4ms is standard for Xbox controllers)
-// arg 2: bool debug — prints signature scanning diagnostics
-if (dma.InitGamepad(4, false)) {
-    std::cout << "[+] Gamepad initialized" << std::endl;
-}
-
-// Check standard XInput discrete buttons
-if (dma.IsGamepadButtonPressed(XINPUT_GAMEPAD_A)) {
-    std::cout << "A button pressed!" << std::endl;
-}
-
-if (dma.IsGamepadButtonPressed(XINPUT_GAMEPAD_DPAD_UP)) {
-    std::cout << "D-Pad Up pressed!" << std::endl;
-}
-
-// Fetch the full analog state (Triggers are scaled 0-255, sticks are -32768 to 32767)
-GamepadState state = dma.GetGamepadState();
-std::cout << "Left Trigger: " << (int)state.leftTrigger << std::endl;
-std::cout << "Right Stick X: " << state.thumbRX << std::endl;
+dma.StartProcessMonitor("target.exe", 500, true,
+    [](const DMAProcessEvent& event) {
+        // Attached, Exited, Reattached, or Error.
+    });
 ```
+
+Call `StopProcessMonitor` before manually changing lifecycle state. Callbacks run
+on the monitor thread and should return quickly. A re-attachment clears cached
+modules, scans, scatter work, and input state just like a manual attachment.
+
+## Registry and VFS
+
+```cpp
+auto hives = dma.GetRegistryHives();
+auto keys = dma.EnumerateRegistryKeys("HKLM\\SOFTWARE");
+auto value = dma.QueryRegistryValue(
+    "HKLM\\SOFTWARE\\Vendor\\Product\\Setting");
+
+auto root = dma.ListVfs("\\");
+auto text = dma.ReadVfsFile("\\sys\\version.txt");
+```
+
+Registry values expose raw type/data plus `AsString`, `AsDword`, and `AsQword`
+helpers. Raw hive writes and VFS writes are available but should be used only
+when the underlying VMMDLL provider documents the path as writable. VFS calls
+require successful plugin initialization.
+
+## Input support
+
+Keyboard edge events are consumed when read. Gamepad state has connection and
+packet metadata, configurable signatures/offsets, reconnect discovery, button
+edges, and normalized dead-zone-aware axes:
+
+```cpp
+dma.InitKeyboard(10);
+if (dma.IsKeyPressed(VK_SPACE)) { /* rising edge */ }
+
+DMAGamepadConfig gamepad;
+gamepad.pollIntervalMs = 4;
+if (dma.InitGamepad(gamepad)) {
+    auto state = dma.GetNormalizedGamepadState();
+    if (dma.IsGamepadButtonJustPressed(XINPUT_GAMEPAD_A)) { /* edge */ }
+}
+```
+
+These helpers depend on Windows kernel layouts, exports, symbols, and the
+reverse-engineered `xboxgip.sys` layout. Treat their defaults as versioned
+starting points and validate them on the target Windows build.
+
+## Automated tests
+
+All VMMDLL function calls are contained in `DMA.Backend.cpp`. Implement
+`IVmmBackend` and pass a `shared_ptr` to `DMA` to test higher-level behavior
+without hardware. Optional methods return `DMAStatus::Unsupported` unless the
+mock overrides them.
+
+CTest runs seven hardware-independent executables. The suites cover lifecycle
+and initialization errors, strict and partial memory transfers, pointer chains,
+process/kernel contexts, monitoring, frame caching, legacy and RAII scatter,
+patterns and captures, parallel/region/section scans, snapshots, symbols,
+PE-dump reconstruction, CR3 recovery and rollback, native/WoW64 PEB parsing,
+physical-map export, RWX cave scanning, registry, VFS, and unsupported backend
+operations. Failure injection exercises prepare/execute, read/write, plugin,
+timeout, malformed-data, and I/O paths. MSVC warnings are errors for the mock
+test core, and GitHub Actions runs Debug and Release builds.
+
+```powershell
+cmake -S . -B build -A x64 `
+  -DTEEKO_DMA_BUILD_EXAMPLE=OFF `
+  -DTEEKO_DMA_BUILD_TESTS=ON
+cmake --build build --config Debug --parallel
+ctest --test-dir build -C Debug --output-on-failure
+
+# Run one labeled area while developing:
+ctest --test-dir build -C Debug -L scatter --output-on-failure
+```
+
+All native VMMDLL function calls are contained in `DMA.Backend.cpp`.
+Implement `IVmmBackend` and pass a `shared_ptr` to `DMA` to add deterministic
+fixtures without hardware. Optional methods return `DMAStatus::Unsupported`
+unless the mock overrides them.
+
+## Second-PC hardware smoke test
+
+The example includes a finite, target-memory-read-only hardware check. Copy the
+compiled example, matching `vmm.dll`, `leechcore.dll`, `info.db`, and the symbol
+support DLLs from the same MemProcFS release to the acquisition PC, then run:
+
+```powershell
+.\teeko_dma_example.exe --hardware-test explorer.exe
+```
+
+It validates initialization/version discovery, the physical map, normal attach
+with bounded CR3-recovery fallback, expanded process information, an MZ read,
+scatter, module/section and VAD/PTE enumeration, then attempts PEB and VFS
+checks. PEB and VFS are warnings because target choice and plugin availability
+can make them legitimately unavailable. The runner never calls a target-memory
+write API. Its console output is intended to be copied back when hardware-only
+failures need diagnosis.
+
+Hardware-dependent validation must still be done on the acquisition PC. A
+useful order is initialization/version, process discovery, attach/module maps,
+known reads, cross-page scatter, region/section scans, symbols, registry/VFS,
+then input support. Test writes and DTB changes last.
+
+## Source layout
+
+- `DMA.hpp`: main public facade and compatibility API.
+- `DMA.Types.*`: result and data-transfer types.
+- `DMA.Backend.*`: injectable interface and native VMMDLL adapter.
+- `DMA.Context.*`: process/kernel contexts, frame cache, and RAII scatter.
+- `DMA.Advanced.cpp`: results, maps, symbols, snapshots, monitoring, registry,
+  and VFS facade methods.
+- `DMA.Pattern.cpp` and `DMA.Scanner.cpp`: legacy and advanced scanners.
+- `DMA.System.cpp`: process/PEB metadata, CR3 recovery, physical maps, and
+  permission-aware code-cave discovery.
+- `DMA.Module.cpp`: PE reconstruction.
+- `DMA.Input.cpp`: keyboard, cursor, and gamepad support.

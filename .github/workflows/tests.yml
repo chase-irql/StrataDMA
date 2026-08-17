@@ -1,0 +1,27 @@
+name: Windows tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B build -A x64
+          -DTEEKO_DMA_BUILD_EXAMPLE=OFF
+          -DTEEKO_DMA_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config ${{ matrix.configuration }} --parallel
+      - name: Test
+        run: >-
+          ctest --test-dir build
+          -C ${{ matrix.configuration }}
+          --output-on-failure

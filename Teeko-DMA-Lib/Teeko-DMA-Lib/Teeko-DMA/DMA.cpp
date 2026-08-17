@@ -1,15 +1,81 @@
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "DMA.hpp"
 
-void _DMA::KeyboardThread(int poll_ms) {
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <limits>
+#include <utility>
+
+namespace {
+constexpr uint64_t kPageMask = 0xFFF;
+constexpr size_t kPageSize = 0x1000;
+constexpr size_t kHeapChunkSize = 0x1000000;
+
+template <typename T>
+T LoadUnaligned(const uint8_t* source)
+{
+    T value{};
+    std::memcpy(&value, source, sizeof(value));
+    return value;
+}
+
+}
+
+void DMA::SetLastError(std::string message)
+{
+    std::lock_guard<std::mutex> lock(errorMutex);
+    lastError = std::move(message);
+}
+
+std::string DMA::GetLastError() const
+{
+    std::lock_guard<std::mutex> lock(errorMutex);
+    return lastError;
+}
+
+std::string DMA::NormalizeName(const std::string& name)
+{
+    std::string normalized = name;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return normalized;
+}
+
+void DMA::StartKeyboardThread(int pollMs)
+{
+    StopKeyboardThread();
+    kb_running.store(true);
+    kb_thread = std::thread(&DMA::KeyboardThread, this, std::max(1, pollMs));
+}
+
+void DMA::StopKeyboardThread()
+{
+    kb_running.store(false);
+    if (kb_thread.joinable())
+        kb_thread.join();
+}
+
+void DMA::StopGamepadThread()
+{
+    gamepad_running.store(false);
+    if (gamepad_thread.joinable())
+        gamepad_thread.join();
+}
+
+void DMA::KeyboardThread(int poll_ms) {
     while (kb_running.load()) {
-        if (hVMM && gafAsyncKeyStateExport) {
+        if (IsInitialized() && gafAsyncKeyStateExport) {
             uint8_t tmp[64] = { 0 };
             DWORD bytesRead = 0;
-            if (VMMDLL_MemReadEx(hVMM,
+            if (backend->ReadMemory(
                 win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
                 gafAsyncKeyStateExport,
-                reinterpret_cast<PBYTE>(tmp),
-                64, &bytesRead, VMMDLL_FLAG_NOCACHE)) {
+                tmp, 64, VMMDLL_FLAG_NOCACHE, bytesRead) && bytesRead == 64) {
                 std::lock_guard<std::mutex> lock(kb_mutex);
                 for (int i = 0; i < 64; i++) {
                     uint8_t became_set = tmp[i] & ~state_bitmap[i]; // bits that turned on
@@ -17,25 +83,26 @@ void _DMA::KeyboardThread(int poll_ms) {
                     pressed_bitmap[i] |= became_set;
                     released_bitmap[i] |= became_clear;
                 }
-                memcpy(state_bitmap, tmp, 64);
+                std::memcpy(state_bitmap.data(), tmp, state_bitmap.size());
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
     }
 }
 
-void _DMA::GamepadThread(int poll_ms) {
+void DMA::GamepadThread(int poll_ms) {
     DWORD sysPid = 4 | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY;
 
     while (gamepad_running.load()) {
-        if (hVMM && active_controller_address) {
-            // Read a 16-byte chunk starting at 0x1CEC.
-            // We only need up to idx 14 (0x0E) to get all inputs!
-            uint8_t buffer[16] = { 0 };
+        if (IsInitialized() && active_controller_address) {
+            std::vector<uint8_t> buffer(std::max<size_t>(16,
+                gamepadConfig.stateSize), 0);
             DWORD br = 0;
 
-            if (VMMDLL_MemReadEx(hVMM, sysPid, active_controller_address + 0x1CEC,
-                buffer, sizeof(buffer), &br, VMMDLL_FLAG_NOCACHE)) {
+            if (backend->ReadMemory(sysPid,
+                active_controller_address + gamepadConfig.stateOffset,
+                buffer.data(), static_cast<DWORD>(buffer.size()),
+                VMMDLL_FLAG_NOCACHE, br) && br == buffer.size()) {
 
                 uint16_t xinput_buttons = 0;
                 uint8_t b1 = buffer[1];
@@ -61,225 +128,246 @@ void _DMA::GamepadThread(int poll_ms) {
 
                 // --- Translate 10-bit Triggers to 8-bit (0-255) ---
                 // Read 2 bytes, mask off garbage bits, and divide by 4 (shift right by 2)
-                uint16_t rawLT = *reinterpret_cast<uint16_t*>(&buffer[3]) & 0x03FF;
-                uint16_t rawRT = *reinterpret_cast<uint16_t*>(&buffer[5]) & 0x03FF;
+                const uint16_t rawLT = LoadUnaligned<uint16_t>(&buffer[3]) & 0x03FF;
+                const uint16_t rawRT = LoadUnaligned<uint16_t>(&buffer[5]) & 0x03FF;
 
                 std::lock_guard<std::mutex> lock(gamepad_mutex);
 
+                pressedGamepadButtons |= static_cast<uint16_t>(
+                    xinput_buttons & ~previousGamepadButtons);
+                releasedGamepadButtons |= static_cast<uint16_t>(
+                    previousGamepadButtons & ~xinput_buttons);
+                previousGamepadButtons = xinput_buttons;
                 currentGamepadState.buttons = xinput_buttons;
                 currentGamepadState.leftTrigger = static_cast<uint8_t>(rawLT / 4);
                 currentGamepadState.rightTrigger = static_cast<uint8_t>(rawRT / 4);
 
                 // --- Map the 16-bit Thumbsticks ---
-                currentGamepadState.thumbLX = *reinterpret_cast<int16_t*>(&buffer[7]);
-                currentGamepadState.thumbLY = *reinterpret_cast<int16_t*>(&buffer[9]);
-                currentGamepadState.thumbRX = *reinterpret_cast<int16_t*>(&buffer[11]);
-                currentGamepadState.thumbRY = *reinterpret_cast<int16_t*>(&buffer[13]);
+                currentGamepadState.thumbLX = LoadUnaligned<int16_t>(&buffer[7]);
+                currentGamepadState.thumbLY = LoadUnaligned<int16_t>(&buffer[9]);
+                currentGamepadState.thumbRX = LoadUnaligned<int16_t>(&buffer[11]);
+                currentGamepadState.thumbRY = LoadUnaligned<int16_t>(&buffer[13]);
+                currentGamepadState.connected = true;
+                ++currentGamepadState.packetNumber;
+            }
+            else {
+                std::lock_guard<std::mutex> lock(gamepad_mutex);
+                currentGamepadState.connected = false;
+                active_controller_address = 0;
+            }
+        }
+        else if (IsInitialized() && gamepadArrayStart != 0) {
+            for (size_t slot = 0; slot < gamepadConfig.slotCount; ++slot) {
+                const uint64_t address = gamepadArrayStart +
+                    slot * gamepadConfig.slotStride;
+                uint8_t active = 0;
+                DWORD transferred = 0;
+                if (backend->ReadMemory(sysPid,
+                    address + gamepadConfig.activeOffset, &active, 1,
+                    VMMDLL_FLAG_NOCACHE, transferred) && transferred == 1 &&
+                    active == 1) {
+                    active_controller_address = address;
+                    break;
+                }
             }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
     }
 }
 
-std::vector<_DMA::PatternByte> _DMA::ParseSignature(const std::string& signature) {
-    std::vector<PatternByte> pattern;
-    size_t i = 0;
-    while (i < signature.size()) {
-        if (signature[i] == ' ') {
-            i++;
-            continue;
-        }
-        if (signature[i] == '?') {
-            pattern.push_back({ 0, true });
-            i++;
-            if (i < signature.size() && signature[i] == '?')
-                i++;
-        }
-        else {
-            std::string byteStr = signature.substr(i, 2);
-            pattern.push_back(
-                { (uint8_t)std::strtoul(byteStr.c_str(), nullptr, 16), false });
-            i += 2;
-        }
-    }
-    return pattern;
-}
-
-uint64_t _DMA::ScanLocalBuffer(const std::vector<uint8_t>& buffer,
-    uint64_t baseAddress,
-    const std::vector<_DMA::PatternByte>& pattern) {
-    if (pattern.empty() || buffer.size() < pattern.size())
-        return 0;
-    for (size_t i = 0; i <= buffer.size() - pattern.size(); ++i) {
-        bool found = true;
-        for (size_t j = 0; j < pattern.size(); ++j) {
-            if (!pattern[j].ignore && buffer[i + j] != pattern[j].value) {
-                found = false;
-                break;
-            }
-        }
-        if (found)
-            return baseAddress + i;
-    }
-    return 0;
-}
-
-std::vector<uint64_t> _DMA::ScanAllLocalBuffer(
-    const std::vector<uint8_t>& buffer,
-    uint64_t baseAddress,
-    const std::vector<_DMA::PatternByte>& pattern)
-{
-    std::vector<uint64_t> results;
-    if (pattern.empty() || buffer.size() < pattern.size())
-        return results;
-
-    for (size_t i = 0; i <= buffer.size() - pattern.size(); ++i)
-    {
-        bool found = true;
-        for (size_t j = 0; j < pattern.size(); ++j)
-        {
-            if (!pattern[j].ignore && buffer[i + j] != pattern[j].value)
-            {
-                found = false;
-                break;
-            }
-        }
-        if (found)
-            results.push_back(baseAddress + i);
-    }
-    return results;
-}
-
-bool _DMA::CacheModule(const std::string& moduleName) {
-    if (!hVMM || targetPID == 0)
+bool DMA::CacheModule(const std::string& moduleName) {
+    if (!IsAttached())
         return false;
-    PVMMDLL_MAP_MODULEENTRY pModuleMapEntry = nullptr;
-    if (VMMDLL_Map_GetModuleFromNameU(hVMM, targetPID, moduleName.c_str(),
-        &pModuleMapEntry, 0)) {
-        moduleCache[moduleName] = { pModuleMapEntry->vaBase,
-                                   pModuleMapEntry->cbImageSize };
-        VMMDLL_MemFree(pModuleMapEntry);
+    DMAModuleInfo module;
+    if (backend->GetModule(targetPID, moduleName, module)) {
+        moduleCache[NormalizeName(moduleName)] = { module.baseAddress,
+                                   module.imageSize };
         return true;
     }
     return false;
 }
 
-std::vector<HeapRegion> _DMA::GetHeapRegions() {
+std::vector<HeapRegion> DMA::GetHeapRegions() {
     std::vector<HeapRegion> heaps;
-    if (!hVMM || targetPID == 0)
+    if (!IsAttached())
         return heaps;
-
-    PVMMDLL_MAP_VAD pVadMap = nullptr;
-    if (!VMMDLL_Map_GetVadU(hVMM, targetPID, TRUE, &pVadMap) || !pVadMap)
+    std::vector<DMAMemoryRegion> regions;
+    if (!backend->GetMemoryRegions(targetPID, true, false, regions))
         return heaps;
-
-    for (DWORD i = 0; i < pVadMap->cMap; ++i) {
-        const auto& vad = pVadMap->pMap[i];
-        size_t sz = vad.vaEnd - vad.vaStart;
-
-        if (vad.fImage || vad.fFile || vad.fTeb || vad.fStack) continue;
-        if (sz == 0 || sz > 0x80000000) continue;
-        if (!vad.fPrivateMemory) continue;  // learned: fPrivateMemory = 1
-        if (vad.VadType != 0)   continue;  // learned: VadType = 0
-
-        heaps.push_back({ vad.vaStart, vad.vaEnd });
+    for (const auto& region : regions) {
+        if (!region.privateMemory || region.image || region.mappedFile ||
+            region.teb || region.stack || region.size == 0 ||
+            region.size > 0x80000000) {
+            continue;
+        }
+        heaps.push_back({ region.baseAddress, region.EndAddress() });
     }
-
-    VMMDLL_MemFree(pVadMap);
     return heaps;
 }
 
-_DMA::~_DMA() { Disconnect(); }
+DMA::DMA(std::shared_ptr<IVmmBackend> customBackend)
+    : backend(customBackend ? std::move(customBackend) : CreateVmmdllBackend())
+{
+}
+
+DMA::~DMA() { Disconnect(); }
 
 /// <summary>
 /// Initializes the VMMDLL interface with default FPGA settings.
 /// </summary>
 /// <returns>True if initialization was successful, false otherwise.</returns>
-bool _DMA::Initialize(bool memMap, bool debug)
+bool DMA::Initialize(bool memMap, bool debug)
 {
-    // Start clean (prevents stale handles from breaking re-init attempts)
+    DMAInitializationOptions options;
+    options.useMemoryMap = memMap;
+    options.debug = debug;
+    return Initialize(options);
+}
+
+bool DMA::Initialize(const DMAInitializationOptions& options)
+{
     Disconnect();
+    SetLastError({});
 
-    auto build_and_init = [&](bool useMemMap) -> bool {
-        // Keep backing strings alive until after Initialize returns
-        std::vector<std::string> store;
-        store.reserve(8);
-
-        store.push_back("");               // argv[0] (dummy program name)
-        store.push_back("-device");
-        store.push_back("fpga://algo=0");
-
-        if (debug) {
-            store.push_back("-v");
-            store.push_back("-printf");
-        }
-
-        std::string memMapPath;
-        if (useMemMap) {
-            try {
-                auto tmp = std::filesystem::temp_directory_path();
-                memMapPath = (tmp / "mmap.txt").string();
-            }
-            catch (...) {
-                useMemMap = false;
-            }
-
-            // Only add -memmap if the file exists (or you know you created it)
-            if (useMemMap && std::filesystem::exists(memMapPath)) {
-                store.push_back("-memmap");
-                store.push_back(memMapPath);
-            }
-            else {
-                // If caller requested memmap but file doesn't exist, treat as "no memmap"
-                // (or you can return false here if you want strict behavior)
-            }
-        }
-
-        std::vector<LPCSTR> argv;
-        argv.reserve(store.size());
-        for (auto& s : store) argv.push_back(s.c_str());
-
-        // Prefer InitializeEx so you can inspect extended error info in a debugger if needed
-        PLC_CONFIG_ERRORINFO pErr = nullptr;
-        hVMM = VMMDLL_InitializeEx((DWORD)argv.size(), argv.data(), &pErr);
-
-        if (!hVMM) {
-            // If you have leechcore.h available, pErr can be inspected in the debugger.
-            // Free if present.
-            if (pErr) {
-                LcMemFree(pErr);
-            }
-            return false;
-        }
-        return true;
-        };
-
-    // First attempt: with memmap if requested
-    if (memMap) {
-        if (build_and_init(true)) return true;
-
-        // Retry without memmap (matches your other codes behavior)
-        Disconnect();
-        return build_and_init(false);
+    if (options.device.empty()) {
+        SetLastError("The MemProcFS device URI cannot be empty.");
+        return false;
     }
 
-    // No memmap requested
-    return build_and_init(false);
+    std::string memoryMapPath = options.memoryMapPath;
+    if (options.useMemoryMap && memoryMapPath.empty()) {
+        try {
+            memoryMapPath = (std::filesystem::temp_directory_path() / "mmap.txt").string();
+        }
+        catch (const std::exception& exception) {
+            if (!options.fallbackWithoutMemoryMap) {
+                SetLastError(std::string("Unable to resolve the temporary memory-map path: ") +
+                    exception.what());
+                return false;
+            }
+        }
+    }
+
+    bool memoryMapAvailable = options.useMemoryMap && memoryMapPath == "auto";
+    if (options.useMemoryMap && !memoryMapPath.empty() && memoryMapPath != "auto") {
+        std::error_code error;
+        memoryMapAvailable = std::filesystem::exists(memoryMapPath, error) && !error;
+    }
+    if (options.useMemoryMap && !memoryMapAvailable &&
+        !options.fallbackWithoutMemoryMap) {
+        SetLastError("The requested memory-map file does not exist: " + memoryMapPath);
+        return false;
+    }
+
+    auto attemptInitialize = [&](bool includeMemoryMap) {
+        std::vector<std::string> arguments = {
+            "Teeko-DMA-Lib", "-device", options.device
+        };
+        if (options.debug) {
+            arguments.push_back("-v");
+            arguments.push_back("-printf");
+        }
+        if (options.waitForInitialization)
+            arguments.push_back("-waitinitialize");
+        if (includeMemoryMap) {
+            arguments.push_back("-memmap");
+            arguments.push_back(memoryMapPath);
+        }
+        arguments.insert(arguments.end(), options.extraArguments.begin(),
+            options.extraArguments.end());
+
+        const auto result = backend->Initialize(arguments);
+        hVMM = backend->NativeHandle();
+        if (!result) {
+            SetLastError(result.message);
+            return false;
+        }
+        if (options.initializePlugins) {
+            const auto plugins = backend->InitializePlugins();
+            if (!plugins) {
+                SetLastError(plugins.message);
+                backend->Close();
+                hVMM = nullptr;
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if (memoryMapAvailable && attemptInitialize(true))
+        return true;
+
+    if (memoryMapAvailable && options.fallbackWithoutMemoryMap) {
+        backend->Close();
+        hVMM = nullptr;
+        return attemptInitialize(false);
+    }
+
+    return !options.useMemoryMap || options.fallbackWithoutMemoryMap
+        ? attemptInitialize(false)
+        : false;
 }
 
 /// <summary>
 /// Closes all active VMMDLL handles and cleans up resources.
 /// </summary>
-void _DMA::Disconnect() {
+void DMA::Disconnect() {
+    StopProcessMonitor();
     StopKeyboardThread();
-    if (hScatter) {
-        VMMDLL_Scatter_CloseHandle(hScatter);
-        hScatter = nullptr;
+    StopGamepadThread();
+    ResetAttachmentState();
+    if (backend)
+        backend->Close();
+    hVMM = nullptr;
+}
+
+void DMA::ResetAttachmentState()
+{
+    legacyScatter.reset();
+    scatterReadStatuses.clear();
+    scatterHasWrites = false;
+    targetPID = 0;
+    mainModuleBase = 0;
+    attachedMainModuleName.clear();
+    moduleCache.clear();
+    queuedModuleScans.clear();
+    scanResults.clear();
+    scanResultsMulti.clear();
+    gafAsyncKeyStateExport = 0;
+    gptCursorAsyncExport = 0;
+    win_logon_pid = 0;
+    active_controller_address = 0;
+    gamepadArrayStart = 0;
+    {
+        std::lock_guard<std::mutex> lock(kb_mutex);
+        state_bitmap.fill(0);
+        pressed_bitmap.fill(0);
+        released_bitmap.fill(0);
     }
-    if (hVMM) {
-        VMMDLL_Close(hVMM);
-        hVMM = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gamepad_mutex);
+        currentGamepadState = {};
     }
+}
+
+void DMA::Detach()
+{
+    StopKeyboardThread();
+    StopGamepadThread();
+    ResetAttachmentState();
+}
+
+bool DMA::RecreateScatterHandle()
+{
+    legacyScatter.reset();
+    scatterReadStatuses.clear();
+    scatterHasWrites = false;
+    if (!IsInitialized() || targetPID == 0)
+        return false;
+    legacyScatter = backend->CreateScatter(targetPID, scatterFlags);
+    if (!legacyScatter)
+        SetLastError("VMMDLL_Scatter_Initialize failed.");
+    return legacyScatter != nullptr;
 }
 
 /// <summary>
@@ -287,20 +375,114 @@ void _DMA::Disconnect() {
 /// </summary>
 /// <param name="processName">Name of the process (e.g., "game.exe").</param>
 /// <returns>True if process found and scatter handle initialized.</returns>
-bool _DMA::Attach(const std::string& processName) {
-    if (!hVMM)
+bool DMA::Attach(const std::string& processName) {
+    if (!IsInitialized()) {
+        SetLastError("Initialize DMA before attaching to a process.");
         return false;
-    if (VMMDLL_PidGetFromName(hVMM, processName.c_str(), &targetPID)) {
-        mainModuleBase = GetModuleBase(processName);
-
-        if (hScatter)
-            VMMDLL_Scatter_CloseHandle(hScatter);
-        hScatter =
-            VMMDLL_Scatter_Initialize(hVMM, targetPID, VMMDLL_FLAG_NOCACHE);
-
-        return true;
     }
-    return false;
+    DWORD pid = 0;
+    const auto result = backend->FindPid(processName, pid);
+    if (!result) {
+        SetLastError("Process not found: " + processName);
+        return false;
+    }
+    return Attach(pid, processName);
+}
+
+bool DMA::Attach(DWORD pid, const std::string& mainModuleName)
+{
+    if (!IsInitialized() || pid == 0) {
+        SetLastError("A valid VMM handle and non-zero PID are required.");
+        return false;
+    }
+
+    Detach();
+    targetPID = pid;
+
+    DMAModuleInfo module;
+    if (!backend->GetModule(targetPID, mainModuleName, module)) {
+        SetLastError("Unable to resolve the process main module.");
+        ResetAttachmentState();
+        return false;
+    }
+
+    mainModuleBase = module.baseAddress;
+    const std::string resolvedName = module.name.empty() ? mainModuleName : module.name;
+    attachedMainModuleName = resolvedName;
+    moduleCache[NormalizeName(resolvedName)] = { module.baseAddress, module.imageSize };
+    if (!mainModuleName.empty())
+        moduleCache[NormalizeName(mainModuleName)] = { module.baseAddress, module.imageSize };
+
+    if (!RecreateScatterHandle()) {
+        ResetAttachmentState();
+        return false;
+    }
+    SetLastError({});
+    return true;
+}
+
+DMAVersionInfo DMA::GetVmmVersion() const
+{
+    DMAVersionInfo version;
+    if (!IsInitialized())
+        return version;
+    backend->ConfigGet(VMMDLL_OPT_CONFIG_VMM_VERSION_MAJOR, version.major);
+    backend->ConfigGet(VMMDLL_OPT_CONFIG_VMM_VERSION_MINOR, version.minor);
+    backend->ConfigGet(VMMDLL_OPT_CONFIG_VMM_VERSION_REVISION, version.revision);
+    return version;
+}
+
+uint32_t DMA::GetWindowsBuild() const
+{
+    uint64_t build = 0;
+    if (!IsInitialized() || !backend->ConfigGet(VMMDLL_OPT_WIN_VERSION_BUILD, build))
+        return 0;
+    return static_cast<uint32_t>(build);
+}
+
+bool DMA::GetProcessInfo(DWORD pid, DMAProcessInfo& info) const
+{
+    info = {};
+    if (!IsInitialized() || pid == 0)
+        return false;
+    return static_cast<bool>(backend->GetProcess(pid, info));
+}
+
+std::vector<DMAProcessInfo> DMA::GetProcesses() const
+{
+    std::vector<DMAProcessInfo> result;
+    if (!IsInitialized())
+        return result;
+    backend->GetProcesses(result);
+    return result;
+}
+
+std::vector<DWORD> DMA::FindProcessIds(const std::string& processName) const
+{
+    std::vector<DWORD> result;
+    const std::string requested = NormalizeName(processName);
+    if (requested.empty())
+        return result;
+    for (const auto& process : GetProcesses()) {
+        if (NormalizeName(process.name) == requested ||
+            NormalizeName(process.longName) == requested) {
+            result.push_back(process.pid);
+        }
+    }
+    return result;
+}
+
+bool DMA::RefreshProcess()
+{
+    if (!IsAttached())
+        return false;
+    const bool success = static_cast<bool>(backend->ConfigSet(
+        VMMDLL_OPT_REFRESH_SPECIFIC_PROCESS | targetPID, 1));
+    if (success)
+        moduleCache.clear();
+    else
+        SetLastError("MemProcFS failed to refresh the attached process.");
+    return success;
 }
 
 /// <summary>
@@ -308,8 +490,8 @@ bool _DMA::Attach(const std::string& processName) {
 /// Checks for the "MZ" header at the main module base.
 /// </summary>
 /// <returns>True if the DTB is valid.</returns>
-bool _DMA::IsCR3Valid() {
-    if (!hVMM || targetPID == 0 || mainModuleBase == 0)
+bool DMA::IsCR3Valid() {
+    if (!IsAttached() || mainModuleBase == 0)
         return false;
 
     // Use NOCACHE to ensure we are querying the physical memory state right now
@@ -322,24 +504,24 @@ bool _DMA::IsCR3Valid() {
 /// Useful for bypassing anti-cheats that scramble the DTB.
 /// </summary>
 /// <param name="dtb">The new Directory Table Base.</param>
-bool _DMA::SetCR3(uint64_t dtb) {
-    if (!hVMM || targetPID == 0)
+bool DMA::SetCR3(uint64_t dtb) {
+    if (!IsAttached())
         return false;
 
     // VMMDLL_OPT_PROCESS_DTB expects the PID in the lower DWORD
     uint64_t option = VMMDLL_OPT_PROCESS_DTB | targetPID;
-    return VMMDLL_ConfigSet(hVMM, option, dtb);
+    return static_cast<bool>(backend->ConfigSet(option, dtb));
 }
 
 /// <summary>
 /// Flushes the internal VMMDLL Transport Lookaside Buffer (TLB) and memory
 /// cache. Use this if memory reads fail due to anti-cheat memory swapping.
 /// </summary>
-bool _DMA::ClearCache() {
-    if (!hVMM)
+bool DMA::ClearCache() {
+    if (!IsInitialized())
         return false;
-    bool tlb = VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_REFRESH_FREQ_TLB, 1);
-    bool mem = VMMDLL_ConfigSet(hVMM, VMMDLL_OPT_REFRESH_FREQ_MEM, 1);
+    const bool tlb = static_cast<bool>(backend->ConfigSet(VMMDLL_OPT_REFRESH_FREQ_TLB, 1));
+    const bool mem = static_cast<bool>(backend->ConfigSet(VMMDLL_OPT_REFRESH_FREQ_MEM, 1));
     return tlb && mem;
 }
 
@@ -350,11 +532,12 @@ bool _DMA::ClearCache() {
 /// <param name="moduleName">Name of the module (e.g.,
 /// "kernel32.dll").</param> <returns>Base address of the module, or 0 if not
 /// found.</returns>
-uint64_t _DMA::GetModuleBase(const std::string& moduleName) {
-    if (moduleCache.find(moduleName) == moduleCache.end())
+uint64_t DMA::GetModuleBase(const std::string& moduleName) {
+    const auto key = NormalizeName(moduleName);
+    if (moduleCache.find(key) == moduleCache.end())
         if (!CacheModule(moduleName))
             return 0;
-    return moduleCache[moduleName].baseAddress;
+    return moduleCache.at(key).baseAddress;
 }
 
 /// <summary>
@@ -362,11 +545,32 @@ uint64_t _DMA::GetModuleBase(const std::string& moduleName) {
 /// </summary>
 /// <param name="moduleName">Name of the module.</param>
 /// <returns>Size of the module, or 0 if not found.</returns>
-uint32_t _DMA::GetModuleSize(const std::string& moduleName) {
-    if (moduleCache.find(moduleName) == moduleCache.end())
+uint32_t DMA::GetModuleSize(const std::string& moduleName) {
+    const auto key = NormalizeName(moduleName);
+    if (moduleCache.find(key) == moduleCache.end())
         if (!CacheModule(moduleName))
             return 0;
-    return moduleCache[moduleName].size;
+    return moduleCache.at(key).size;
+}
+
+void DMA::ClearModuleCache()
+{
+    moduleCache.clear();
+}
+
+std::vector<DMAModuleInfo> DMA::GetModules(bool refresh)
+{
+    std::vector<DMAModuleInfo> result;
+    if (!IsAttached())
+        return result;
+    if (refresh)
+        RefreshProcess();
+
+    if (!backend->GetModules(targetPID, result))
+        return result;
+    for (const auto& info : result)
+        moduleCache[NormalizeName(info.name)] = { info.baseAddress, info.imageSize };
+    return result;
 }
 
 /// <summary>
@@ -377,12 +581,13 @@ uint32_t _DMA::GetModuleSize(const std::string& moduleName) {
 /// <param name="size">Number of bytes to read.</param>
 /// <param name="flags">VMMDLL flags (e.g., VMMDLL_FLAG_NOCACHE).</param>
 /// <returns>True if the read was successful.</returns>
-bool _DMA::ReadRaw(uint64_t address, void* buffer, size_t size) {
-    if (!hVMM || targetPID == 0 || address == 0)
-        return false;
-    DWORD bytesRead = 0;
-    return VMMDLL_MemReadEx(hVMM, targetPID, address, (PBYTE)buffer, size,
-        &bytesRead, VMMDLL_FLAG_NOCACHE);
+bool DMA::ReadRaw(uint64_t address, void* buffer, size_t size, ULONG64 flags) {
+    return ReadRawEx(targetPID, address, buffer, size, flags);
+}
+
+bool DMA::ReadRawEx(DWORD pid, uint64_t address, void* buffer, size_t size,
+    ULONG64 flags) {
+    return static_cast<bool>(ReadRawResultEx(pid, address, buffer, size, flags));
 }
 
 /// <summary>
@@ -392,10 +597,12 @@ bool _DMA::ReadRaw(uint64_t address, void* buffer, size_t size) {
 /// <param name="buffer">Local buffer containing data to write.</param>
 /// <param name="size">Number of bytes to write.</param>
 /// <returns>True if the write was successful.</returns>
-bool _DMA::WriteRaw(uint64_t address, const void* buffer, size_t size) {
-    if (!hVMM || targetPID == 0 || address == 0)
-        return false;
-    return VMMDLL_MemWrite(hVMM, targetPID, address, (PBYTE)buffer, size);
+bool DMA::WriteRaw(uint64_t address, const void* buffer, size_t size) {
+    return WriteRawEx(targetPID, address, buffer, size);
+}
+
+bool DMA::WriteRawEx(DWORD pid, uint64_t address, const void* buffer, size_t size) {
+    return static_cast<bool>(WriteRawResultEx(pid, address, buffer, size));
 }
 
 /// <summary>
@@ -404,16 +611,28 @@ bool _DMA::WriteRaw(uint64_t address, const void* buffer, size_t size) {
 /// <param name="base">Base address to start from.</param>
 /// <param name="offsets">List of offsets to apply sequentially.</param>
 /// <returns>The final address, or 0 if the chain is broken.</returns>
-uint64_t _DMA::ReadChain(uint64_t base,
+uint64_t DMA::ReadChain(uint64_t base,
     const std::vector<uint64_t>& offsets) {
+    uint64_t result = 0;
+    return TryReadChain(base, offsets, result) ? result : 0;
+}
+
+bool DMA::TryReadChain(uint64_t base, const std::vector<uint64_t>& offsets,
+    uint64_t& result) {
+    result = 0;
+    if (base == 0)
+        return false;
+
     uint64_t currentAddress = base;
     for (const auto& offset : offsets) {
-        currentAddress = Read<uint64_t>(currentAddress);
-        if (!currentAddress)
-            break;
+        if (!TryRead(currentAddress, currentAddress) || currentAddress == 0 ||
+            offset > std::numeric_limits<uint64_t>::max() - currentAddress) {
+            return false;
+        }
         currentAddress += offset;
     }
-    return currentAddress;
+    result = currentAddress;
+    return true;
 }
 
 /// <summary>
@@ -423,12 +642,12 @@ uint64_t _DMA::ReadChain(uint64_t base,
 /// <param name="maxLength">Maximum characters to read.</param>
 /// <returns>The read string, truncated at the first null
 /// terminator.</returns>
-std::string _DMA::ReadString(uint64_t address, size_t maxLength) {
-    if (address == 0)
+std::string DMA::ReadString(uint64_t address, size_t maxLength) {
+    if (address == 0 || maxLength == 0)
         return "";
     std::string result;
     result.resize(maxLength);
-    if (ReadRaw(address, &result[0], maxLength)) {
+    if (ReadRaw(address, result.data(), maxLength)) {
         size_t nullTerminator = result.find('\0');
         if (nullTerminator != std::string::npos) {
             result.resize(nullTerminator);
@@ -445,12 +664,13 @@ std::string _DMA::ReadString(uint64_t address, size_t maxLength) {
 /// <param name="maxLength">Maximum characters to read.</param>
 /// <returns>The read string, truncated at the first null
 /// terminator.</returns>
-std::wstring _DMA::ReadWString(uint64_t address, size_t maxLength) {
-    if (address == 0)
+std::wstring DMA::ReadWString(uint64_t address, size_t maxLength) {
+    if (address == 0 || maxLength == 0 ||
+        maxLength > std::numeric_limits<size_t>::max() / sizeof(wchar_t))
         return L"";
     std::wstring result;
     result.resize(maxLength);
-    if (ReadRaw(address, &result[0], maxLength * sizeof(wchar_t))) {
+    if (ReadRaw(address, result.data(), maxLength * sizeof(wchar_t))) {
         size_t nullTerminator = result.find(L'\0');
         if (nullTerminator != std::wstring::npos) {
             result.resize(nullTerminator);
@@ -469,38 +689,53 @@ std::wstring _DMA::ReadWString(uint64_t address, size_t maxLength) {
 /// instruction.</param> <param name="instructionSize">Total size of the
 /// instruction.</param> <returns>The absolute address resolved from the
 /// relative offset.</returns>
-uint64_t _DMA::ResolveRelative(uint64_t instructionAddress,
+uint64_t DMA::ResolveRelative(uint64_t instructionAddress,
     uint32_t offsetOffset,
     uint32_t instructionSize) {
     if (instructionAddress == 0)
         return 0;
-    int32_t relativeOffset = Read<int32_t>(instructionAddress + offsetOffset);
-    if (relativeOffset == 0)
+    if (offsetOffset > std::numeric_limits<uint64_t>::max() - instructionAddress)
         return 0;
-    return instructionAddress + instructionSize + relativeOffset;
+    int32_t relativeOffset = 0;
+    if (!TryRead(instructionAddress + offsetOffset, relativeOffset))
+        return 0;
+    if (instructionSize > std::numeric_limits<uint64_t>::max() - instructionAddress)
+        return 0;
+    const uint64_t nextInstruction = instructionAddress + instructionSize;
+    if (relativeOffset >= 0) {
+        const auto positiveOffset = static_cast<uint64_t>(relativeOffset);
+        if (positiveOffset > std::numeric_limits<uint64_t>::max() - nextInstruction)
+            return 0;
+        return nextInstruction + positiveOffset;
+    }
+    const auto magnitude = static_cast<uint64_t>(-static_cast<int64_t>(relativeOffset));
+    return magnitude > nextInstruction ? 0 : nextInstruction - magnitude;
+}
+
+bool DMA::VirtualToPhysical(uint64_t virtualAddress,
+    uint64_t& physicalAddress) const
+{
+    physicalAddress = 0;
+    return IsAttached() && virtualAddress != 0 &&
+        static_cast<bool>(backend->VirtualToPhysical(targetPID, virtualAddress,
+            physicalAddress));
+}
+
+bool DMA::PrefetchPages(const std::vector<uint64_t>& addresses) const
+{
+    if (!IsAttached() || addresses.empty() ||
+        addresses.size() > std::numeric_limits<DWORD>::max()) {
+        return false;
+    }
+    return static_cast<bool>(backend->PrefetchPages(targetPID, addresses));
 }
 
 /// <summary>
 /// Reads a block of memory from the target process.
 /// </summary>
-std::vector<uint8_t> _DMA::DumpMemory(uint64_t address, size_t size,
+std::vector<uint8_t> DMA::DumpMemory(uint64_t address, size_t size,
     ULONG64 flags) {
-    std::vector<uint8_t> buffer;
-    if (!hVMM || targetPID == 0 || address == 0 || size == 0)
-        return buffer;
-    buffer.resize(size);
-    DWORD bytesRead = 0;
-    if (!VMMDLL_MemReadEx(hVMM, targetPID, address, buffer.data(), size,
-        &bytesRead, flags))
-        buffer.clear();
-    // When ZEROPAD_ON_FAIL is set, VMMDLL fills unreadable pages with zeros
-    // and still returns true, but bytesRead may be less than size. The buffer
-    // is fully allocated and zero-padded — do NOT trim it or sig scans over
-    // large modules (with guard pages / uncommitted sections) will silently
-    // miss patterns that fall in the latter half of the image.
-    else if (!(flags & VMMDLL_FLAG_ZEROPAD_ON_FAIL) && bytesRead != size)
-        buffer.resize(bytesRead);
-    return buffer;
+    return DumpMemoryEx(targetPID, address, size, flags);
 }
 
 /// <summary>
@@ -509,50 +744,78 @@ std::vector<uint8_t> _DMA::DumpMemory(uint64_t address, size_t size,
 /// Use this instead of DumpMemory whenever the target address lives in kernel
 /// space (win32k.sys, win32kbase.sys, win32ksgd.sys, etc.).
 /// </summary>
-std::vector<uint8_t> _DMA::DumpMemoryEx(DWORD pid, uint64_t address, size_t size,
+std::vector<uint8_t> DMA::DumpMemoryEx(DWORD pid, uint64_t address, size_t size,
     ULONG64 flags) {
-    std::vector<uint8_t> buffer;
-    if (!hVMM || address == 0 || size == 0)
-        return buffer;
-    buffer.resize(size);
-    DWORD bytesRead = 0;
-    if (!VMMDLL_MemReadEx(hVMM, pid, address, buffer.data(), size,
-        &bytesRead, flags))
-        buffer.clear();
-    else if (!(flags & VMMDLL_FLAG_ZEROPAD_ON_FAIL) && bytesRead != size)
-        buffer.resize(bytesRead);
+    if (!IsInitialized() || address == 0 || size == 0 ||
+        size - 1 > std::numeric_limits<uint64_t>::max() - address) {
+        return {};
+    }
+
+    std::vector<uint8_t> buffer(size, 0);
+    constexpr size_t maxReadSize = 0x40000000; // VMMDLL documents a 1 GiB maximum.
+    size_t offset = 0;
+    while (offset < size) {
+        const DWORD chunkSize = static_cast<DWORD>(
+            std::min(maxReadSize, size - offset));
+        DWORD bytesRead = 0;
+        const auto result = backend->ReadMemory(pid, address + offset,
+            buffer.data() + offset, chunkSize, flags, bytesRead);
+        if (!result && result.status != DMAStatus::PartialTransfer) {
+            buffer.clear();
+            return buffer;
+        }
+        if (bytesRead != chunkSize &&
+            !(flags & VMMDLL_FLAG_ZEROPAD_ON_FAIL)) {
+            buffer.resize(offset + bytesRead);
+            return buffer;
+        }
+        offset += chunkSize;
+    }
     return buffer;
 }
 
 /// <summary>Add a signature scan request to the queue.</summary>
-void _DMA::QueueModuleScan(const std::string& moduleName,
+void DMA::QueueModuleScan(const std::string& moduleName,
     const std::string& scanName,
     const std::string& signature) {
     queuedModuleScans[moduleName].push_back({ scanName, signature });
 }
 
 /// <summary>Queue a multi-result signature scan. Use GetScanResultAll() to retrieve.</summary>
-void _DMA::QueueModuleScanAll(const std::string& moduleName,
+void DMA::QueueModuleScanAll(const std::string& moduleName,
     const std::string& scanName,
     const std::string& signature) {
     queuedModuleScans[moduleName].push_back({ scanName, signature, true });
 }
 
 /// <summary>Execute all queued module scans.</summary>
-void _DMA::ExecuteModuleScans() {
+bool DMA::ExecuteModuleScans() {
+    bool allSucceeded = true;
     for (const auto& [modName, requests] : queuedModuleScans) {
         uint64_t modBase = GetModuleBase(modName);
         uint32_t modSize = GetModuleSize(modName);
 
-        if (modBase == 0 || modSize == 0)
+        if (modBase == 0 || modSize == 0) {
+            allSucceeded = false;
             continue;
+        }
 
         std::vector<uint8_t> localDump = DumpMemory(modBase, modSize);
-        if (localDump.empty())
+        if (localDump.empty()) {
+            allSucceeded = false;
             continue;
+        }
 
         for (const auto& req : requests) {
-            std::vector<PatternByte> pattern = ParseSignature(req.signature);
+            std::vector<PatternByte> pattern;
+            if (!ParseSignature(req.signature, pattern)) {
+                allSucceeded = false;
+                if (req.wantsAll)
+                    scanResultsMulti[req.name] = {};
+                else
+                    scanResults[req.name] = 0;
+                continue;
+            }
             if (req.wantsAll)
                 scanResultsMulti[req.name] = ScanAllLocalBuffer(localDump, modBase, pattern);
             else
@@ -560,86 +823,73 @@ void _DMA::ExecuteModuleScans() {
         }
     }
     queuedModuleScans.clear();
+    return allSucceeded;
 }
 
 /// <summary>Retrieve the result of a previous scan.</summary>
-uint64_t _DMA::GetScanResult(const std::string& scanName) {
-    if (scanResults.find(scanName) != scanResults.end()) {
-        return scanResults[scanName];
-    }
-    return 0;
+uint64_t DMA::GetScanResult(const std::string& scanName) const {
+    const auto found = scanResults.find(scanName);
+    return found == scanResults.end() ? 0 : found->second;
 }
 
 /// <summary>Retrieve all results from a previous multi-result scan.</summary>
-std::vector<uint64_t> _DMA::GetScanResultAll(const std::string& scanName) {
+std::vector<uint64_t> DMA::GetScanResultAll(const std::string& scanName) const {
     auto it = scanResultsMulti.find(scanName);
     if (it != scanResultsMulti.end())
         return it->second;
     return {};
 }
 
+void DMA::ClearScanResults()
+{
+    scanResults.clear();
+    scanResultsMulti.clear();
+}
+
 /// <summary>
 /// Scans the private heap of the process for a signature.
 /// WARNING: This can be slow as it reads significant amounts of memory.
 /// </summary>
-uint64_t _DMA::SigScanHeap(const std::string& signature) {
-    std::vector<PatternByte> pattern = ParseSignature(signature);
-    if (pattern.empty()) {
-        std::cout << "[HEAP] Pattern empty after parse\n";
-        return 0;
-    }
+uint64_t DMA::SigScanHeap(const std::string& signature) {
+    const auto results = SigScanHeapAll(signature, 1);
+    return results.empty() ? 0 : results.front();
+}
 
-    std::vector<HeapRegion> heaps = GetHeapRegions();
-    std::cout << "[HEAP] Region count: " << heaps.size() << "\n";
-    if (heaps.empty())
-        return 0;
+std::vector<uint64_t> DMA::SigScanHeapAll(const std::string& signature,
+    size_t maxResults) {
+    std::vector<PatternByte> pattern;
+    if (!ParseSignature(signature, pattern))
+        return {};
 
-    constexpr size_t CHUNK_SIZE = 0x1000000;
-    size_t totalBytesRead = 0;
-    int failedDumps = 0;
-    int successDumps = 0;
-
-    for (const auto& r : heaps) {
-        size_t regionSize = r.end - r.start;
-        if (regionSize == 0)
+    std::vector<uint64_t> results;
+    for (const auto& region : GetHeapRegions()) {
+        const uint64_t regionSize64 = region.end - region.start;
+        if (regionSize64 == 0 || regionSize64 > std::numeric_limits<size_t>::max())
             continue;
+        const size_t regionSize = static_cast<size_t>(regionSize64);
+        const size_t overlap = pattern.size() > 1 ? pattern.size() - 1 : 0;
 
-        for (size_t offset = 0; offset < regionSize; offset += CHUNK_SIZE) {
-            size_t chunkSize = min(CHUNK_SIZE, regionSize - offset);
-            std::vector<uint8_t> localDump = DumpMemory(
-                r.start + offset, chunkSize,
+        for (size_t offset = 0; offset < regionSize;) {
+            const size_t payloadSize = std::min(kHeapChunkSize, regionSize - offset);
+            const size_t readSize = std::min(regionSize - offset, payloadSize + overlap);
+            auto localDump = DumpMemory(region.start + offset, readSize,
                 VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-
-            if (localDump.empty()) {
-                failedDumps++;
-                std::cout << "[HEAP] DumpMemory FAILED: 0x" << std::hex
-                    << (r.start + offset) << " size=0x" << chunkSize << std::dec << "\n";
-                continue;
+            if (!localDump.empty()) {
+                auto chunkResults = ScanAllLocalBuffer(localDump,
+                    region.start + offset, pattern,
+                    maxResults == 0 ? 0 : maxResults - results.size());
+                for (uint64_t match : chunkResults) {
+                    // Matches starting in overlap belong to the next chunk.
+                    if (match < region.start + offset + payloadSize)
+                        results.push_back(match);
+                    if (maxResults != 0 && results.size() >= maxResults)
+                        return results;
+                }
             }
-
-            successDumps++;
-            totalBytesRead += localDump.size();
-
-            // Check if dump is all zeros (ZEROPAD filled it but read failed silently)
-            bool allZero = std::all_of(localDump.begin(), localDump.end(), [](uint8_t b) { return b == 0; });
-            if (allZero) {
-                std::cout << "[HEAP] WARNING: Dump all-zero (silent fail?): 0x" << std::hex
-                    << (r.start + offset) << std::dec << "\n";
-                continue;
-            }
-
-            uint64_t match = ScanLocalBuffer(localDump, r.start + offset, pattern);
-            if (match) {
-                std::cout << "[HEAP] Match found at 0x" << std::hex << match << std::dec << "\n";
-                return match;
-            }
+            offset += payloadSize;
         }
     }
-
-    std::cout << "[HEAP] Scan complete. Successful dumps: " << successDumps
-        << " Failed: " << failedDumps
-        << " Total bytes scanned: 0x" << std::hex << totalBytesRead << std::dec << "\n";
-    return 0;
+    return results;
 }
 
 /// <summary>
@@ -648,9 +898,10 @@ uint64_t _DMA::SigScanHeap(const std::string& signature) {
 /// crosses a page. Both source address and destination pointer advance in lockstep.
 /// No heap allocation; writes go directly into the caller-supplied output buffer.
 /// </summary>
-bool _DMA::PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size)
+bool DMA::PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size)
 {
-    if (!hScatter || address == 0 || !outBuffer || size == 0)
+    if (!legacyScatter || address == 0 || !outBuffer || size == 0 ||
+        size - 1 > std::numeric_limits<uint64_t>::max() - address)
         return false;
 
     auto* out = static_cast<uint8_t*>(outBuffer);
@@ -659,17 +910,18 @@ bool _DMA::PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size)
 
     while (remain > 0)
     {
-        const size_t pageOffset = static_cast<size_t>(cur & 0xFFF);
-        const size_t bytesThisPage = 0x1000 - pageOffset;
+        const size_t pageOffset = static_cast<size_t>(cur & kPageMask);
+        const size_t bytesThisPage = kPageSize - pageOffset;
         const size_t chunk = (remain < bytesThisPage) ? remain : bytesThisPage;
 
-        if (!VMMDLL_Scatter_PrepareEx(
-            hScatter,
-            cur,
-            static_cast<DWORD>(chunk),
-            reinterpret_cast<PBYTE>(out),
-            nullptr))
+        scatterReadStatuses.push_back(
+            { static_cast<DWORD>(chunk), 0 });
+
+        if (!legacyScatter->PrepareRead(cur, out, static_cast<DWORD>(chunk),
+            &scatterReadStatuses.back().actual))
         {
+            RecreateScatterHandle();
+            SetLastError("VMMDLL_Scatter_PrepareEx failed; queued scatter work was reset.");
             return false;
         }
 
@@ -685,735 +937,66 @@ bool _DMA::PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size)
 /// Prepares a raw scatter read. Automatically splits across 4 KB page boundaries.
 /// Returns false on invalid inputs or if any VMMDLL prepare call fails.
 /// </summary>
-bool _DMA::AddScatterRaw(uint64_t address, void* outBuffer, size_t size)
+bool DMA::AddScatterRaw(uint64_t address, void* outBuffer, size_t size)
 {
     return PrepareScatterSplit(address, outBuffer, size);
 }
 
-/// <summary>Executes all prepared scatter reads and clears the handle for reuse.</summary>
-bool _DMA::ExecuteScatter()
+bool DMA::AddScatterWriteRaw(uint64_t address, const void* buffer, size_t size)
 {
-    if (!hScatter)
+    if (!legacyScatter || address == 0 || !buffer || size == 0 ||
+        size - 1 > std::numeric_limits<uint64_t>::max() - address) {
         return false;
-
-    if (VMMDLL_Scatter_ExecuteRead(hScatter))
-    {
-        VMMDLL_Scatter_Clear(hScatter, targetPID, 0);
-        return true;
-    }
-    return false;
-}
-
-/// <summary>
-/// Dumps a module from memory to disk, fixing Section Headers and IAT.
-/// Useful for unpacking and static analysis.
-/// </summary>
-/// <summary>
-/// Dumps a module from memory to disk using a Linear Dump strategy.
-/// This maps the file 1:1 with memory (Virtual Address == Raw Offset), which determines the best layout for packed/obfuscated files.
-/// </summary>
-bool _DMA::DumpModule(const std::string& moduleName, const std::string& outPath) {
-    uint64_t modBase = GetModuleBase(moduleName);
-    uint32_t modSize = GetModuleSize(moduleName);
-    if (modBase == 0 || modSize == 0)
-        return false;
-
-    // 1. Pull the complete module from memory
-    // We use the full module size to ensure we get everything including the headers and all sections
-    std::vector<uint8_t> buffer = DumpMemory(modBase, modSize);
-    if (buffer.empty() || buffer.size() < sizeof(IMAGE_DOS_HEADER))
-        return false;
-
-    PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)buffer.data();
-    if (pDos->e_magic != IMAGE_DOS_SIGNATURE)
-        return false;
-
-    PIMAGE_NT_HEADERS64 pNt = (PIMAGE_NT_HEADERS64)(buffer.data() + pDos->e_lfanew);
-    if (pNt->Signature != IMAGE_NT_SIGNATURE)
-        return false;
-
-    // We are creating a "Linear Dump" / "Virtual Dump".
-    // In this format, the file on disk is identical to the image in memory.
-    // Raw Offset == Virtual Address.
-    // This defeats packers that manipulate section headers to alias raw offsets to
-    // completely different parts of the file than where they end up in memory.
-
-    bool is32Bit = (pNt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC);
-    WORD numSections = pNt->FileHeader.NumberOfSections;
-    PIMAGE_SECTION_HEADER pSection = IMAGE_FIRST_SECTION(pNt);
-
-    // Force section alignment to match file alignment (usually page size 0x1000)
-    // This tells tools that the file is effectively "flat"
-    pNt->OptionalHeader.FileAlignment = pNt->OptionalHeader.SectionAlignment;
-
-    // Fix section headers to point effectively to themselves
-    for (WORD i = 0; i < numSections; i++) {
-        // Point the raw data to the virtual address.
-        // In a linear dump, the data exists in the file at the exact same offset as its RVA.
-        pSection[i].PointerToRawData = pSection[i].VirtualAddress;
-
-        // Ensure the size is aligned and valid
-        pSection[i].SizeOfRawData = pSection[i].Misc.VirtualSize;
     }
 
-    // Fix IAT if possible (Import Address Table)
-    // Many packers will destroy the IAT or redirect it. VMMDLL can help us reconstruct it.
-
-    // Zero bound imports directory as it is invalid in a dump
-    if (pNt->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT) {
-        pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress = 0;
-        pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].Size = 0;
-    }
-
-    // Zero IAT directory to force regeneration by analysis tools, or we can try to fix it.
-    // For a raw dump, often better to clear it if we can't fully rebuild it, but we will try to patch what we can.
-
-    // Attempt to fix imports using VMMDLL's analysis
-    PVMMDLL_MAP_IAT pIatMap = nullptr;
-    if (VMMDLL_Map_GetIATU(hVMM, targetPID, moduleName.c_str(), &pIatMap) && pIatMap) {
-        for (DWORD i = 0; i < pIatMap->cMap; i++) {
-            const auto& entry = pIatMap->pMap[i];
-            if (entry.Thunk.rvaFirstThunk == 0)
-                continue;
-
-            // Ensure we are within bounds of our dump
-            if ((entry.Thunk.rvaFirstThunk + (is32Bit ? 4 : 8)) > buffer.size())
-                continue;
-
-            // Patch the IAT entry in our buffer
-            if (entry.Thunk.rvaNameFunction != 0) {
-                // We have a name/ordinal match
-                if (is32Bit)
-                    *reinterpret_cast<uint32_t*>(buffer.data() + entry.Thunk.rvaFirstThunk) = entry.Thunk.rvaNameFunction;
-                else
-                    *reinterpret_cast<uint64_t*>(buffer.data() + entry.Thunk.rvaFirstThunk) = entry.Thunk.rvaNameFunction;
-            }
-            else if (entry.Thunk.wHint != 0) {
-                // Ordinal import
-                if (is32Bit)
-                    *reinterpret_cast<uint32_t*>(buffer.data() + entry.Thunk.rvaFirstThunk) = 0x80000000 | entry.Thunk.wHint;
-                else
-                    *reinterpret_cast<uint64_t*>(buffer.data() + entry.Thunk.rvaFirstThunk) = 0x8000000000000000ULL | entry.Thunk.wHint;
-            }
+    auto* source = static_cast<const uint8_t*>(buffer);
+    uint64_t currentAddress = address;
+    size_t remaining = size;
+    while (remaining != 0) {
+        const size_t pageOffset = static_cast<size_t>(currentAddress & kPageMask);
+        const size_t chunk = std::min(remaining, kPageSize - pageOffset);
+        if (!legacyScatter->PrepareWrite(currentAddress, source,
+            static_cast<DWORD>(chunk))) {
+            RecreateScatterHandle();
+            SetLastError("VMMDLL_Scatter_PrepareWrite failed; queued scatter work was reset.");
+            return false;
         }
-        VMMDLL_MemFree(pIatMap);
+        scatterHasWrites = true;
+        currentAddress += chunk;
+        source += chunk;
+        remaining -= chunk;
     }
-
-    // 8. Write to disk
-    std::ofstream outFile(outPath, std::ios::binary);
-    if (!outFile)
-        return false;
-
-    outFile.write(reinterpret_cast<char*>(buffer.data()), buffer.size());
-    outFile.close();
     return true;
 }
 
-/// <summary>
-/// Initialize the keyboard state reader.
-/// Finds the gafAsyncKeyState export in win32kbase.sys/win32k.sys and starts a background thread to poll it.
-/// </summary>
-/// <param name="poll_ms">Interval in milliseconds to poll the keyboard state (default: 10ms).</param>
-/// <returns>True if initialization was successful, false otherwise.</returns>
-bool _DMA::InitKeyboard(int poll_ms, bool debug) {
-    if (!hVMM) {
-        if (debug) printf("[InitKeyboard] FAIL: hVMM is null\n");
-        return false;
-    }
-
-    std::string win = "0";
-    DWORD type = 0;
-    DWORD size = 0;
-
-    if (VMMDLL_WinReg_QueryValueExU(hVMM,
-        "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentBuild",
-        &type, nullptr, &size)) {
-        std::vector<uint8_t> buffer(size + 2, 0);
-        if (VMMDLL_WinReg_QueryValueExU(hVMM,
-            "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\CurrentBuild",
-            &type, buffer.data(), &size)) {
-            if (size >= 2 && buffer[1] == 0) {
-                std::wstring ws(reinterpret_cast<wchar_t*>(buffer.data()));
-                win = std::string(ws.begin(), ws.end());
-            }
-            else {
-                win = std::string(reinterpret_cast<char*>(buffer.data()));
-            }
-        }
-        else {
-            if (debug) printf("[InitKeyboard] WARN: Second RegQuery (with buffer) failed, using default build=\"0\"\n");
-        }
-    }
-    else {
-        if (debug) printf("[InitKeyboard] WARN: First RegQuery (size probe) failed, using default build=\"0\"\n");
-    }
-
-    if (debug) printf("[InitKeyboard] Raw build string: \"%s\"\n", win.c_str());
-
-    int Winver = 0;
-    try {
-        Winver = std::stoi(win);
-    }
-    catch (...) {
-        if (debug) printf("[InitKeyboard] FAIL: Could not parse build string \"%s\" as integer\n", win.c_str());
-        return false;
-    }
-
-    if (debug) printf("[InitKeyboard] Winver=%d (threshold 22000, path=%s)\n",
-        Winver, Winver > 22000 ? "Win11/csrss sig-scan" : "Win10/EAT");
-
-    if (!VMMDLL_PidGetFromName(hVMM, "winlogon.exe", &win_logon_pid)) {
-        if (debug) printf("[InitKeyboard] FAIL: Could not find winlogon.exe pid\n");
-        return false;
-    }
-    if (debug) printf("[InitKeyboard] winlogon.exe pid=%u\n", win_logon_pid);
-
-    // ---------------------------------------------------------------
-    // Win11+ path: locate gafAsyncKeyState via csrss session sig-scan
-    // ---------------------------------------------------------------
-    if (Winver > 22000) {
-        SIZE_T cPids = 0;
-        if (!VMMDLL_PidList(hVMM, nullptr, &cPids)) {
-            if (debug) printf("[InitKeyboard] FAIL: VMMDLL_PidList (count probe) failed\n");
-            return false;
-        }
-        if (debug) printf("[InitKeyboard] Total process count: %zu\n", cPids);
-
-        std::vector<DWORD> pids(cPids);
-        if (!VMMDLL_PidList(hVMM, pids.data(), &cPids)) {
-            if (debug) printf("[InitKeyboard] FAIL: VMMDLL_PidList (fill) failed\n");
-            return false;
-        }
-
-        for (DWORD pid : pids) {
-            LPSTR szName = VMMDLL_ProcessGetInformationString(
-                hVMM, pid, VMMDLL_PROCESS_INFORMATION_OPT_STRING_PATH_USER_IMAGE);
-            if (!szName)
-                continue;
-
-            std::string procName(szName);
-            VMMDLL_MemFree(szName);
-
-            if (procName.find("csrss.exe") == std::string::npos)
-                continue;
-
-            if (debug) printf("[InitKeyboard] Found csrss candidate: pid=%u path=\"%s\"\n",
-                pid, procName.c_str());
-
-            auto getModule = [&](const std::string& name) -> std::pair<uint64_t, uint32_t> {
-                PVMMDLL_MAP_MODULEENTRY pModuleMapEntry = nullptr;
-                if (VMMDLL_Map_GetModuleFromNameU(hVMM, pid, name.c_str(), &pModuleMapEntry, 0)) {
-                    uint64_t base = pModuleMapEntry->vaBase;
-                    uint32_t sz = pModuleMapEntry->cbImageSize;
-                    VMMDLL_MemFree(pModuleMapEntry);
-                    return { base, sz };
-                }
-                return { 0, 0 };
-                };
-
-            // --- Locate win32ksgd.sys or win32k.sys ---
-            auto [win32k_base, win32k_size] = getModule("win32ksgd.sys");
-            if (win32k_base) {
-                if (debug) printf("[InitKeyboard] [pid=%u] win32ksgd.sys base=0x%llx size=0x%x\n",
-                    pid, win32k_base, win32k_size);
-            }
-            else {
-                if (debug) printf("[InitKeyboard] [pid=%u] win32ksgd.sys not found, trying win32k.sys\n", pid);
-                auto res = getModule("win32k.sys");
-                win32k_base = res.first;
-                win32k_size = res.second;
-                if (!win32k_base) {
-                    if (debug) printf("[InitKeyboard] [pid=%u] win32k.sys not found either, skipping\n", pid);
-                    continue;
-                }
-                if (debug) printf("[InitKeyboard] [pid=%u] win32k.sys base=0x%llx size=0x%x\n",
-                    pid, win32k_base, win32k_size);
-            }
-
-            // --- Dump win32k(sgd).sys ---
-            std::vector<uint8_t> win32k_dump = DumpMemoryEx(
-                pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-                win32k_base, win32k_size, VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-            if (win32k_dump.empty()) {
-                if (debug) printf("[InitKeyboard] [pid=%u] FAIL: DumpMemory returned empty for win32k base=0x%llx\n",
-                    pid, win32k_base);
-                continue;
-            }
-            if (debug) printf("[InitKeyboard] [pid=%u] Dumped win32k, bytes=%zu\n", pid, win32k_dump.size());
-
-            // --- Sig1: g_session_global_slots ---
-            auto sig1 = ParseSignature("48 8B 05 ? ? ? ? 48 8B 04 C8");
-            uint64_t g_session_ptr = ScanLocalBuffer(win32k_dump, win32k_base, sig1);
-            if (g_session_ptr) {
-                if (debug) printf("[InitKeyboard] [pid=%u] Sig1 hit at 0x%llx\n", pid, g_session_ptr);
-            }
-            else {
-                if (debug) printf("[InitKeyboard] [pid=%u] Sig1 no match, trying Sig2\n", pid);
-                auto sig2 = ParseSignature("48 8B 05 ? ? ? ? FF C9");
-                g_session_ptr = ScanLocalBuffer(win32k_dump, win32k_base, sig2);
-                if (g_session_ptr) {
-                    if (debug) printf("[InitKeyboard] [pid=%u] Sig2 hit at 0x%llx\n", pid, g_session_ptr);
-                }
-                else {
-                    if (debug) printf("[InitKeyboard] [pid=%u] Sig2 no match, skipping this csrss\n", pid);
-                    continue;
-                }
-            }
-
-            int relative = *reinterpret_cast<int*>(&win32k_dump[g_session_ptr - win32k_base + 3]);
-            uint64_t g_session_global_slots = g_session_ptr + 7 + relative;
-            if (debug) printf("[InitKeyboard] [pid=%u] relative=0x%x g_session_global_slots=0x%llx\n",
-                pid, (uint32_t)relative, g_session_global_slots);
-
-            // --- Walk slot table to find user_session_state ---
-            // All pointer reads here are kernel addresses, must use kernel-context pid.
-            DWORD kpid = pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY;
-            auto KRead64 = [&](uint64_t addr) -> uint64_t {
-                uint64_t val = 0;
-                DWORD br = 0;
-                VMMDLL_MemReadEx(hVMM, kpid, addr, reinterpret_cast<PBYTE>(&val),
-                    sizeof(val), &br, VMMDLL_FLAG_NOCACHE);
-                return val;
-                };
-
-            uint64_t user_session_state = 0;
-            for (int i = 0; i < 4; i++) {
-                uint64_t ptr1 = KRead64(g_session_global_slots);
-                uint64_t ptr2 = KRead64(ptr1 + 8 * i);
-                user_session_state = KRead64(ptr2);
-                if (debug) printf("[InitKeyboard] [pid=%u] slot[%d]: ptr1=0x%llx ptr2=0x%llx uss=0x%llx\n",
-                    pid, i, ptr1, ptr2, user_session_state);
-                if (user_session_state > 0x7FFFFFFFFFFF) {
-                    if (debug) printf("[InitKeyboard] [pid=%u] user_session_state valid at slot %d\n", pid, i);
-                    break;
-                }
-            }
-            if (user_session_state <= 0x7FFFFFFFFFFF) {
-                if (debug) printf("[InitKeyboard] [pid=%u] WARN: No valid user_session_state found in any slot (last=0x%llx)\n",
-                    pid, user_session_state);
-            }
-
-            // --- Locate win32kbase.sys ---
-            auto [win32kbase_base, win32kbase_size] = getModule("win32kbase.sys");
-            if (!win32kbase_base) {
-                if (debug) printf("[InitKeyboard] [pid=%u] FAIL: win32kbase.sys not found, skipping\n", pid);
-                continue;
-            }
-            if (debug) printf("[InitKeyboard] [pid=%u] win32kbase.sys base=0x%llx size=0x%x\n",
-                pid, win32kbase_base, win32kbase_size);
-
-            // --- Dump win32kbase.sys ---
-            std::vector<uint8_t> win32kbase_dump = DumpMemoryEx(
-                pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-                win32kbase_base, win32kbase_size, VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-            if (win32kbase_dump.empty()) {
-                if (debug) printf("[InitKeyboard] [pid=%u] FAIL: DumpMemory returned empty for win32kbase base=0x%llx\n",
-                    pid, win32kbase_base);
-                continue;
-            }
-            if (debug) printf("[InitKeyboard] [pid=%u] Dumped win32kbase, bytes=%zu\n", pid, win32kbase_dump.size());
-
-            // --- Sig3: session_offset for gafAsyncKeyState ---
-            auto sig3 = ParseSignature("48 8D 90 ? ? ? ? E8 ? ? ? ? 0F 57 C0");
-            uint64_t ptr = ScanLocalBuffer(win32kbase_dump, win32kbase_base, sig3);
-            if (ptr) {
-                uint32_t session_offset = *reinterpret_cast<uint32_t*>(
-                    &win32kbase_dump[ptr - win32kbase_base + 3]);
-                gafAsyncKeyStateExport = user_session_state + session_offset;
-                if (debug) printf("[InitKeyboard] [pid=%u] Sig3 hit=0x%llx session_offset=0x%x gafAsyncKeyStateExport=0x%llx\n",
-                    pid, ptr, session_offset, gafAsyncKeyStateExport);
-            }
-            else {
-                if (debug) printf("[InitKeyboard] [pid=%u] Sig3 no match, skipping this csrss\n", pid);
-                continue;
-            }
-
-            if (gafAsyncKeyStateExport > 0x7FFFFFFFFFFF) {
-                if (debug) printf("[InitKeyboard] [pid=%u] gafAsyncKeyStateExport=0x%llx valid, starting kb thread\n",
-                    pid, gafAsyncKeyStateExport);
-                {
-                    std::lock_guard<std::mutex> lock(kb_mutex);
-                    memset(state_bitmap, 0, sizeof(state_bitmap));
-                    memset(prev_bitmap, 0, sizeof(prev_bitmap));
-                    memset(pressed_bitmap, 0, sizeof(pressed_bitmap));
-                    memset(released_bitmap, 0, sizeof(released_bitmap));
-                }
-                StartKeyboardThread(poll_ms);
-                return true;
-            }
-            else {
-                if (debug) printf("[InitKeyboard] [pid=%u] FAIL: gafAsyncKeyStateExport=0x%llx failed kernel address check\n",
-                    pid, gafAsyncKeyStateExport);
-            }
-        }
-
-        if (debug) printf("[InitKeyboard] FAIL: Exhausted all csrss candidates without success\n");
+/// <summary>Executes all prepared scatter reads and clears the handle for reuse.</summary>
+bool DMA::ExecuteScatter()
+{
+    if (!legacyScatter || (scatterReadStatuses.empty() && !scatterHasWrites))
         return false;
 
-    }
-    // ---------------------------------------------------------------
-    // Win10 path: locate gafAsyncKeyState via EAT, fallback to PDB
-    // ---------------------------------------------------------------
-    else {
-        if (debug) printf("[InitKeyboard] Win10 path: attempting EAT lookup for gafAsyncKeyState in win32kbase.sys\n");
-
-        PVMMDLL_MAP_EAT pEatMap = nullptr;
-        if (VMMDLL_Map_GetEATU(hVMM,
-            win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-            "win32kbase.sys", &pEatMap)) {
-            if (debug) printf("[InitKeyboard] EAT map obtained, version=%u entries=%u\n",
-                pEatMap ? pEatMap->dwVersion : 0,
-                pEatMap ? pEatMap->cMap : 0);
-            if (pEatMap->dwVersion == VMMDLL_MAP_EAT_VERSION) {
-                for (DWORD i = 0; i < pEatMap->cMap; i++) {
-                    if (strcmp(pEatMap->pMap[i].uszFunction, "gafAsyncKeyState") == 0) {
-                        gafAsyncKeyStateExport = pEatMap->pMap[i].vaFunction;
-                        if (debug) printf("[InitKeyboard] EAT found gafAsyncKeyState at 0x%llx (entry %u)\n",
-                            gafAsyncKeyStateExport, i);
-                        break;
-                    }
-                }
-                if (gafAsyncKeyStateExport == 0) {
-                    if (debug) printf("[InitKeyboard] WARN: EAT version matched but gafAsyncKeyState not found in %u entries\n",
-                        pEatMap->cMap);
-                }
-            }
-            else {
-                if (debug) printf("[InitKeyboard] WARN: EAT version mismatch got=%u expected=%u\n",
-                    pEatMap->dwVersion, VMMDLL_MAP_EAT_VERSION);
-            }
-            VMMDLL_MemFree(pEatMap);
-        }
-        else {
-            if (debug) printf("[InitKeyboard] WARN: VMMDLL_Map_GetEATU failed for win32kbase.sys in winlogon pid=%u\n",
-                win_logon_pid);
-        }
-
-        // --- PDB fallback if EAT didn't give a valid kernel address ---
-        if (gafAsyncKeyStateExport < 0x7FFFFFFFFFFF) {
-            if (debug) printf("[InitKeyboard] EAT result 0x%llx not a valid kernel addr, trying PDB fallback\n",
-                gafAsyncKeyStateExport);
-            PVMMDLL_MAP_MODULEENTRY pModuleEntry = nullptr;
-            if (VMMDLL_Map_GetModuleFromNameU(hVMM,
-                win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-                "win32kbase.sys", &pModuleEntry, 0)) {
-                if (debug) printf("[InitKeyboard] PDB: win32kbase.sys base=0x%llx\n", pModuleEntry->vaBase);
-                char szModuleName[MAX_PATH] = {};
-                if (VMMDLL_PdbLoad(hVMM,
-                    win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-                    pModuleEntry->vaBase, szModuleName)) {
-                    if (debug) printf("[InitKeyboard] PDB loaded: module name=\"%s\"\n", szModuleName);
-                    uint64_t va = 0;
-                    if (VMMDLL_PdbSymbolAddress(hVMM, szModuleName, "gafAsyncKeyState", &va)) {
-                        gafAsyncKeyStateExport = va;
-                        if (debug) printf("[InitKeyboard] PDB resolved gafAsyncKeyState to 0x%llx\n", va);
-                    }
-                    else {
-                        if (debug) printf("[InitKeyboard] FAIL: PDB symbol lookup for gafAsyncKeyState returned false\n");
-                    }
-                }
-                else {
-                    if (debug) printf("[InitKeyboard] FAIL: VMMDLL_PdbLoad returned false for win32kbase.sys\n");
-                }
-                VMMDLL_MemFree(pModuleEntry);
-            }
-            else {
-                if (debug) printf("[InitKeyboard] FAIL: Could not find win32kbase.sys module entry in winlogon pid=%u\n",
-                    win_logon_pid);
-            }
-        }
-
-        bool valid = gafAsyncKeyStateExport > 0x7FFFFFFFFFFF;
-        if (debug) printf("[InitKeyboard] Final gafAsyncKeyStateExport=0x%llx valid=%s\n",
-            gafAsyncKeyStateExport, valid ? "YES" : "NO");
-
-        if (valid) {
-            if (debug) printf("[InitKeyboard] Starting keyboard thread poll_ms=%d\n", poll_ms);
-            StartKeyboardThread(poll_ms);
-        }
-
-        return valid;
-    }
-}
-
-/// <summary>
-/// Initializes the Xbox Gamepad reader by locating xboxgip.sys, scanning for the
-/// static context array, and finding the active controller slot.
-/// </summary>
-bool _DMA::InitGamepad(int poll_ms, bool debug) {
-    if (!hVMM) return false;
-
-    DWORD sysPid = 4 | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY;
-
-    PVMMDLL_MAP_MODULEENTRY pModuleEntry = nullptr;
-    if (!VMMDLL_Map_GetModuleFromNameU(hVMM, sysPid, "xboxgip.sys", &pModuleEntry, 0)) {
-        if (debug) printf("[InitGamepad] FAIL: Could not find xboxgip.sys\n");
-        return false;
-    }
-
-    uint64_t base = pModuleEntry->vaBase;
-    uint32_t size = pModuleEntry->cbImageSize;
-    VMMDLL_MemFree(pModuleEntry);
-
-    std::vector<uint8_t> moduleDump = DumpMemoryEx(sysPid, base, size);
-    if (moduleDump.empty()) return false;
-
-    // Signature #2: 48 8D 05 ? ? ? ? 33 D2
-    auto pattern = ParseSignature("48 8D 05 ? ? ? ? 33 D2");
-    uint64_t hitAddress = ScanLocalBuffer(moduleDump, base, pattern);
-
-    if (!hitAddress) {
-        if (debug) printf("[InitGamepad] FAIL: Signature not found.\n");
-        return false;
-    }
-
-    // Resolve RIP-relative offset from local buffer
-    int32_t relativeOffset = *reinterpret_cast<int32_t*>(&moduleDump[hitAddress - base + 3]);
-    uint64_t arrayStart = hitAddress + 7 + relativeOffset;
-
-    // Find the active slot
-    for (int i = 0; i < 8; i++) {
-        uint64_t slotAddress = arrayStart + (i * 8056);
-
-        uint8_t isActive = 0;
-        DWORD br = 0;
-        if (!VMMDLL_MemReadEx(hVMM, sysPid, slotAddress + 0x140, &isActive, 1, &br, VMMDLL_FLAG_NOCACHE)) {
-            continue;
-        }
-
-        if (isActive == 1) {
-            if (debug) printf("[InitGamepad] SUCCESS: Found active controller at 0x%llx\n", slotAddress);
-            active_controller_address = slotAddress;
-
-            // Start the background thread
-            gamepad_running = true;
-            gamepad_thread = std::thread(&_DMA::GamepadThread, this, poll_ms);
-            return true;
-        }
-    }
-
-    if (debug) printf("[InitGamepad] FAIL: No active controllers found.\n");
-    return false;
-}
-
-/// <summary>
-/// Returns a thread-safe copy of the current Gamepad State.
-/// </summary>
-GamepadState _DMA::GetGamepadState() {
-    std::lock_guard<std::mutex> lock(gamepad_mutex);
-    return currentGamepadState;
-}
-
-/// <summary>
-/// Checks if a specific XInput button bitmask is currently pressed.
-/// Example: dma.IsGamepadButtonPressed(0x1000) // Checks 'A' button
-/// </summary>
-bool _DMA::IsGamepadButtonPressed(uint16_t buttonMask) {
-    std::lock_guard<std::mutex> lock(gamepad_mutex);
-    return (currentGamepadState.buttons & buttonMask) != 0;
-}
-
-/// <summary>
-/// Check if a key is currently held down.
-/// </summary>
-/// <param name="vk">Virtual Key code to check.</param>
-/// <returns>True if the key is down, false otherwise.</returns>
-bool _DMA::IsKeyDown(uint32_t vk) {
-    std::lock_guard<std::mutex> lock(kb_mutex);
-    return (state_bitmap[(vk * 2 / 8)] & (1 << (vk % 4 * 2))) != 0;
-}
-
-// Was the key just pressed this poll (down now, not down before)
-/// <summary>
-/// Check if a key was just pressed since the last poll (rising edge).
-/// </summary>
-/// <param name="vk">Virtual Key code to check.</param>
-/// <returns>True if the key was just pressed, false otherwise.</returns>
-bool _DMA::IsKeyPressed(uint32_t vk) {
-    std::lock_guard<std::mutex> lock(kb_mutex);
-    int byte = vk * 2 / 8;
-    int bit = 1 << (vk % 4 * 2);
-    if (pressed_bitmap[byte] & bit) {
-        pressed_bitmap[byte] &= ~bit; // clear on read
-        return true;
-    }
-    return false;
-}
-
-// Was the key just released this poll
-/// <summary>
-/// Check if a key was just released since the last poll (falling edge).
-/// </summary>
-/// <param name="vk">Virtual Key code to check.</param>
-/// <returns>True if the key was just released, false otherwise.</returns>
-bool _DMA::IsKeyReleased(uint32_t vk) {
-    std::lock_guard<std::mutex> lock(kb_mutex);
-    int byte = vk * 2 / 8;
-    int bit = 1 << (vk % 4 * 2);
-    if (released_bitmap[byte] & bit) {
-        released_bitmap[byte] &= ~bit; // clear on read
-        return true;
-    }
-    return false;
-}
-
-/// <summary>
-    /// Reads the global mouse cursor position from win32kbase.sys
-    /// Note: win_logon_pid must be initialized first (e.g., by calling InitKeyboard).
-    /// </summary>
-POINT _DMA::GetCursorPosition(bool debug) {
-    POINT pt = { 0, 0 };
-
-    if (!hVMM || win_logon_pid == 0) {
-        if (debug) printf("[CursorPos] FAIL: hVMM=%p win_logon_pid=%u\n", hVMM, win_logon_pid);
-        return pt;
-    }
-
-    static uint64_t gptCursorAsyncExport = 0;
-
-    if (gptCursorAsyncExport == 0) {
-        if (debug) printf("[CursorPos] Attempting to resolve gptCursorAsync via sig scan...\n");
-
-        PVMMDLL_MAP_MODULEENTRY pModuleEntry = nullptr;
-        if (!VMMDLL_Map_GetModuleFromNameU(hVMM,
-            win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-            "win32kbase.sys", &pModuleEntry, 0)) {
-            if (debug) printf("[CursorPos] FAIL: Could not find win32kbase.sys in pid=%u\n", win_logon_pid);
-            return pt;
-        }
-
-        uint64_t base = pModuleEntry->vaBase;
-        uint32_t size = pModuleEntry->cbImageSize;
-        VMMDLL_MemFree(pModuleEntry);
-
-        if (debug) printf("[CursorPos] win32kbase.sys found, vaBase=0x%llx size=0x%x\n", base, size);
-
-        // Dump using win_logon_pid kernel context, NOT targetPID
-        std::vector<uint8_t> dump(size);
-        DWORD bytesRead = 0;
-        if (!VMMDLL_MemReadEx(hVMM,
-            win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-            base, dump.data(), size, &bytesRead, VMMDLL_FLAG_ZEROPAD_ON_FAIL)) {
-            if (debug) printf("[CursorPos] FAIL: Could not dump win32kbase.sys bytesRead=%u\n", bytesRead);
-            return pt;
-        }
-
-        if (debug) printf("[CursorPos] Dumped win32kbase.sys bytesRead=%u\n", bytesRead);
-
-        struct SigEntry { const char* name; const char* pattern; };
-        SigEntry sigs[] = {
-            { "Sig2", "4C 8B 0D ? ? ? ? 48 8D 55" },
-            { "Sig3", "48 8B 05 ? ? ? ? 49 89 86" },
-            { "Sig4", "48 8B 0D ? ? ? ? 48 89 0D" },
-            { "Sig5", "4C 8B 0D ? ? ? ? 4C 8B C5" },
-        };
-
-        for (auto& sig : sigs) {
-            auto pattern = ParseSignature(sig.pattern);
-            uint64_t hit = ScanLocalBuffer(dump, base, pattern);
-            if (!hit) {
-                if (debug) printf("[CursorPos] %s: no match\n", sig.name);
-                continue;
-            }
-
-            int32_t rel = *reinterpret_cast<int32_t*>(&dump[hit - base + 3]);
-            uint64_t va = hit + 7 + rel;
-
-            if (debug) printf("[CursorPos] %s hit=0x%llx rel=0x%x resolved va=0x%llx\n", sig.name, hit, rel, va);
-
-            if (va > 0x7FFFFFFFFFFF) {
-                gptCursorAsyncExport = va;
-                if (debug) printf("[CursorPos] gptCursorAsync resolved to 0x%llx via %s\n", va, sig.name);
-                break;
-            }
-
-            if (debug) printf("[CursorPos] %s resolved va 0x%llx failed kernel address check\n", sig.name, va);
-        }
-
-        if (gptCursorAsyncExport == 0) {
-            if (debug) printf("[CursorPos] FAIL: All sigs failed to resolve gptCursorAsync\n");
-            return pt;
-        }
-    }
-
-    DWORD bytesRead = 0;
-    if (!VMMDLL_MemReadEx(hVMM,
-        win_logon_pid | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY,
-        gptCursorAsyncExport, (PBYTE)&pt, sizeof(POINT),
-        &bytesRead, VMMDLL_FLAG_NOCACHE)) {
-        if (debug) printf("[CursorPos] FAIL: MemReadEx failed at 0x%llx bytesRead=%u\n", gptCursorAsyncExport, bytesRead);
-        pt = { 0, 0 };
-        return pt;
-    }
-
-    if (debug) printf("[CursorPos] OK: x=%ld y=%ld\n", pt.x, pt.y);
-    return pt;
-}
-
-/// <summary>
-    /// Locates the xboxgip.sys static array (caches it), finds the active controller slot,
-    /// and returns the live 24-byte hardware state buffer for real-time diffing.
-    /// </summary>
-std::vector<uint8_t> _DMA::GetLiveGamepadBuffer(bool debug) {
-    std::vector<uint8_t> buffer(24, 0); // 24-byte array initialized to 0
-    if (!hVMM) return buffer;
-
-    DWORD sysPid = 4 | VMMDLL_PID_PROCESS_WITH_KERNELMEMORY;
-
-    // 1. Check if we already found the controller. If not, do the heavy sig-scan.
-    if (active_controller_address == 0) {
-        PVMMDLL_MAP_MODULEENTRY pModuleEntry = nullptr;
-        if (!VMMDLL_Map_GetModuleFromNameU(hVMM, sysPid, "xboxgip.sys", &pModuleEntry, 0)) {
-            if (debug) printf("[GamepadDump] FAIL: Could not find xboxgip.sys\n");
-            return buffer;
-        }
-
-        uint64_t base = pModuleEntry->vaBase;
-        uint32_t size = pModuleEntry->cbImageSize;
-        VMMDLL_MemFree(pModuleEntry);
-
-        std::vector<uint8_t> moduleDump = DumpMemoryEx(sysPid, base, size);
-        if (moduleDump.empty()) return buffer;
-
-        auto pattern = ParseSignature("48 8D 05 ? ? ? ? 33 D2");
-        uint64_t hitAddress = ScanLocalBuffer(moduleDump, base, pattern);
-
-        if (!hitAddress) {
-            if (debug) printf("[GamepadDump] FAIL: Signature not found.\n");
-            return buffer;
-        }
-
-        int32_t relativeOffset = *reinterpret_cast<int32_t*>(&moduleDump[hitAddress - base + 3]);
-        uint64_t arrayStart = hitAddress + 7 + relativeOffset;
-
-        if (debug) printf("[GamepadDump] Array Base resolved to: 0x%llx\n", arrayStart);
-
-        for (int i = 0; i < 8; i++) {
-            uint64_t slotAddress = arrayStart + (i * 8056);
-
-            uint8_t isActive = 0;
-            DWORD br = 0;
-            if (!VMMDLL_MemReadEx(hVMM, sysPid, slotAddress + 0x140, &isActive, 1, &br, VMMDLL_FLAG_NOCACHE)) {
-                continue;
-            }
-
-            if (isActive == 1) {
-                if (debug) printf("[GamepadDump] Found active controller at slot %d (0x%llx)\n", i, slotAddress);
-                // Cache the address so we never have to sig-scan again!
-                active_controller_address = slotAddress;
+    const bool executed = static_cast<bool>(legacyScatter->Execute(scatterHasWrites));
+    bool complete = executed;
+    if (executed) {
+        for (const auto& status : scatterReadStatuses) {
+            if (status.actual != status.expected) {
+                complete = false;
                 break;
             }
         }
     }
 
-    // 2. We have the address! Read the 24 bytes starting at the button offset.
-    if (active_controller_address != 0) {
-        DWORD br = 0;
-        VMMDLL_MemReadEx(hVMM, sysPid, active_controller_address + 0x1CEC, buffer.data(), 24, &br, VMMDLL_FLAG_NOCACHE);
-    }
-    else {
-        if (debug) printf("[GamepadDump] FAIL: No active controllers found in slots 0-7.\n");
-    }
+    // PrepareEx retains caller buffer pointers for the lifetime of the handle.
+    // Recreate it after every batch so stack/local output buffers are safe to release.
+    const bool reset = RecreateScatterHandle();
+    if (!executed)
+        SetLastError("VMMDLL scatter execution failed.");
+    else if (!complete)
+        SetLastError("One or more scatter reads returned only partial data.");
+    return complete && reset;
+}
 
-    return buffer;
+bool DMA::ResetScatter()
+{
+    return RecreateScatterHandle();
 }
