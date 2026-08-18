@@ -1,5 +1,8 @@
 # StrataDMA
 
+[![Windows tests](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml/badge.svg)](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
 A C++17 wrapper around MemProcFS/VMMDLL for authorized DMA-backed Windows
 memory inspection. The repository vendors the MemProcFS 5.16.5 and LeechCore
 headers and x64 import libraries.
@@ -386,6 +389,14 @@ Hardware-dependent validation must still be done on the acquisition PC. A
 useful order is initialization/version, process discovery, attach/module maps,
 known reads, cross-page scatter, region/section scans, symbols, registry/VFS,
 then input support. Test writes and DTB changes last.
+
+## License
+
+StrataDMA is free and open-source software licensed under the
+[GNU Affero General Public License version 3](LICENSE). The vendored MemProcFS
+and LeechCore components retain their upstream AGPLv3 and GPLv3 licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for versions, file scope, and
+source links.
 
 ## Source layout
 
