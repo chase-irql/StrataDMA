@@ -17,6 +17,19 @@ T LoadUnalignedInput(const uint8_t* source)
     std::memcpy(&value, source, sizeof(value));
     return value;
 }
+
+uint64_t FindPattern(const std::vector<uint8_t>& buffer, uint64_t baseAddress,
+    const std::string& signature)
+{
+    const auto pattern = DMA::CompilePattern(signature);
+    if (!pattern)
+        return 0;
+    DMAScanOptions options;
+    options.maxResults = 1;
+    const auto matches = DMA::ScanBufferAdvanced(buffer, pattern.value,
+        baseAddress, options);
+    return matches && !matches.value.empty() ? matches.value.front().address : 0;
+}
 }
 
 
@@ -117,15 +130,15 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
             if (debug) printf("[InitKeyboard] [pid=%u] Dumped win32k, bytes=%zu\n", pid, win32k_dump.size());
 
             // --- Sig1: g_session_global_slots ---
-            auto sig1 = ParseSignature("48 8B 05 ? ? ? ? 48 8B 04 C8");
-            uint64_t g_session_ptr = ScanLocalBuffer(win32k_dump, win32k_base, sig1);
+            uint64_t g_session_ptr = FindPattern(win32k_dump, win32k_base,
+                "48 8B 05 ? ? ? ? 48 8B 04 C8");
             if (g_session_ptr) {
                 if (debug) printf("[InitKeyboard] [pid=%u] Sig1 hit at 0x%llx\n", pid, g_session_ptr);
             }
             else {
                 if (debug) printf("[InitKeyboard] [pid=%u] Sig1 no match, trying Sig2\n", pid);
-                auto sig2 = ParseSignature("48 8B 05 ? ? ? ? FF C9");
-                g_session_ptr = ScanLocalBuffer(win32k_dump, win32k_base, sig2);
+                g_session_ptr = FindPattern(win32k_dump, win32k_base,
+                    "48 8B 05 ? ? ? ? FF C9");
                 if (g_session_ptr) {
                     if (debug) printf("[InitKeyboard] [pid=%u] Sig2 hit at 0x%llx\n", pid, g_session_ptr);
                 }
@@ -190,8 +203,8 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
             if (debug) printf("[InitKeyboard] [pid=%u] Dumped win32kbase, bytes=%zu\n", pid, win32kbase_dump.size());
 
             // --- Sig3: session_offset for gafAsyncKeyState ---
-            auto sig3 = ParseSignature("48 8D 90 ? ? ? ? E8 ? ? ? ? 0F 57 C0");
-            uint64_t ptr = ScanLocalBuffer(win32kbase_dump, win32kbase_base, sig3);
+            uint64_t ptr = FindPattern(win32kbase_dump, win32kbase_base,
+                "48 8D 90 ? ? ? ? E8 ? ? ? ? 0F 57 C0");
             if (ptr) {
                 uint32_t session_offset = *reinterpret_cast<uint32_t*>(
                     &win32kbase_dump[ptr - win32kbase_base + 3]);
@@ -348,8 +361,8 @@ bool DMA::InitGamepad(const DMAGamepadConfig& config) {
     if (moduleDump.empty()) return false;
 
     // Signature #2: 48 8D 05 ? ? ? ? 33 D2
-    auto pattern = ParseSignature(config.slotArraySignature);
-    uint64_t hitAddress = ScanLocalBuffer(moduleDump, base, pattern);
+    uint64_t hitAddress = FindPattern(moduleDump, base,
+        config.slotArraySignature);
 
     if (!hitAddress) {
         if (debug) printf("[InitGamepad] FAIL: Signature not found.\n");
@@ -559,8 +572,7 @@ POINT DMA::GetCursorPosition(bool debug) {
         };
 
         for (auto& sig : sigs) {
-            auto pattern = ParseSignature(sig.pattern);
-            uint64_t hit = ScanLocalBuffer(dump, base, pattern);
+            uint64_t hit = FindPattern(dump, base, sig.pattern);
             if (!hit) {
                 if (debug) printf("[CursorPos] %s: no match\n", sig.name);
                 continue;
@@ -624,8 +636,8 @@ std::vector<uint8_t> DMA::GetLiveGamepadBuffer(bool debug) {
         std::vector<uint8_t> moduleDump = DumpMemoryEx(sysPid, base, size);
         if (moduleDump.empty()) return buffer;
 
-        auto pattern = ParseSignature(gamepadConfig.slotArraySignature);
-        uint64_t hitAddress = ScanLocalBuffer(moduleDump, base, pattern);
+        uint64_t hitAddress = FindPattern(moduleDump, base,
+            gamepadConfig.slotArraySignature);
 
         if (!hitAddress) {
             if (debug) printf("[GamepadDump] FAIL: Signature not found.\n");

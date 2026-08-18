@@ -7,7 +7,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -41,37 +40,12 @@ private:
         uint32_t size = 0;
     };
 
-    struct PatternByte {
-        uint8_t value = 0;
-        bool ignore = false;
-    };
-
-    struct SigScanRequest {
-        std::string name;
-        std::string signature;
-        bool wantsAll = false;
-    };
-
-    struct ScatterReadStatus {
-        DWORD expected = 0;
-        DWORD actual = 0;
-    };
-
     std::shared_ptr<IVmmBackend> backend;
     VMM_HANDLE hVMM = nullptr;
     DWORD targetPID = 0;
     uint64_t mainModuleBase = 0;
     std::string attachedMainModuleName;
     std::unordered_map<std::string, ModuleData> moduleCache;
-
-    std::unique_ptr<IVmmScatterSession> legacyScatter;
-    DWORD scatterFlags = VMMDLL_FLAG_NOCACHE;
-    bool scatterHasWrites = false;
-    std::deque<ScatterReadStatus> scatterReadStatuses;
-
-    std::unordered_map<std::string, std::vector<SigScanRequest>> queuedModuleScans;
-    std::unordered_map<std::string, uint64_t> scanResults;
-    std::unordered_map<std::string, std::vector<uint64_t>> scanResultsMulti;
 
     uint64_t gafAsyncKeyStateExport = 0;
     uint64_t gptCursorAsyncExport = 0;
@@ -107,7 +81,6 @@ private:
 
     void SetLastError(std::string message);
     void ResetAttachmentState();
-    bool RecreateScatterHandle();
     static std::string NormalizeName(const std::string& name);
 
     void KeyboardThread(int pollMs);
@@ -117,18 +90,7 @@ private:
     void StopGamepadThread();
     void ProcessMonitorThread();
 
-    static bool ParseSignature(const std::string& signature,
-        std::vector<PatternByte>& pattern);
-    static std::vector<PatternByte> ParseSignature(const std::string& signature);
-    static uint64_t ScanLocalBuffer(const std::vector<uint8_t>& buffer,
-        uint64_t baseAddress, const std::vector<PatternByte>& pattern);
-    static std::vector<uint64_t> ScanAllLocalBuffer(
-        const std::vector<uint8_t>& buffer, uint64_t baseAddress,
-        const std::vector<PatternByte>& pattern, size_t maxResults = 0);
-
     bool CacheModule(const std::string& moduleName);
-    std::vector<HeapRegion> GetHeapRegions();
-    bool PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size);
 
 public:
     explicit DMA(std::shared_ptr<IVmmBackend> customBackend = {});
@@ -142,8 +104,6 @@ public:
         return instance;
     }
 
-    // Legacy convenience overload. See DMAInitializationOptions for full control.
-    bool Initialize(bool memMap = true, bool debug = false);
     bool Initialize(const DMAInitializationOptions& options);
     void Disconnect();
     bool IsInitialized() const noexcept
@@ -194,14 +154,8 @@ public:
     VMM_HANDLE GetVMM() const noexcept { return hVMM; }
     std::shared_ptr<IVmmBackend> GetBackend() const noexcept { return backend; }
 
-    // Reads are strict: success requires every requested byte to be returned.
-    bool ReadRaw(uint64_t address, void* buffer, size_t size,
-        ULONG64 flags = VMMDLL_FLAG_NOCACHE);
-    bool ReadRawEx(DWORD pid, uint64_t address, void* buffer, size_t size,
-        ULONG64 flags = VMMDLL_FLAG_NOCACHE);
-    bool WriteRaw(uint64_t address, const void* buffer, size_t size);
-    bool WriteRawEx(DWORD pid, uint64_t address, const void* buffer, size_t size);
-    // Detailed variants preserve transfer counts and backend diagnostics.
+    // Success requires every requested byte to be transferred. Results preserve
+    // transfer counts and backend diagnostics.
     DMAOperationResult ReadRawResult(uint64_t address, void* buffer, size_t size,
         ULONG64 flags = VMMDLL_FLAG_NOCACHE);
     DMAOperationResult ReadRawResultEx(DWORD pid, uint64_t address, void* buffer,
@@ -219,42 +173,6 @@ public:
         DMAResult<T> result;
         result.operation = ReadRawResult(address, &result.value, sizeof(T), flags);
         return result;
-    }
-
-    template <typename T>
-    bool TryRead(uint64_t address, T& value,
-        ULONG64 flags = VMMDLL_FLAG_NOCACHE)
-    {
-        static_assert(std::is_trivially_copyable<T>::value,
-            "DMA reads require a trivially copyable type");
-        value = T{};
-        return ReadRaw(address, &value, sizeof(T), flags);
-    }
-
-    template <typename T>
-    bool TryReadEx(DWORD pid, uint64_t address, T& value,
-        ULONG64 flags = VMMDLL_FLAG_NOCACHE)
-    {
-        static_assert(std::is_trivially_copyable<T>::value,
-            "DMA reads require a trivially copyable type");
-        value = T{};
-        return ReadRawEx(pid, address, &value, sizeof(T), flags);
-    }
-
-    template <typename T>
-    T Read(uint64_t address, ULONG64 flags = VMMDLL_FLAG_NOCACHE)
-    {
-        T value{};
-        TryRead(address, value, flags);
-        return value;
-    }
-
-    template <typename T>
-    bool Write(uint64_t address, const T& value)
-    {
-        static_assert(std::is_trivially_copyable<T>::value,
-            "DMA writes require a trivially copyable type");
-        return WriteRaw(address, &value, sizeof(T));
     }
 
     uint64_t ReadChain(uint64_t base, const std::vector<uint64_t>& offsets);
@@ -308,13 +226,7 @@ public:
     std::vector<uint8_t> DumpMemoryEx(DWORD pid, uint64_t address, size_t size,
         ULONG64 flags = VMMDLL_FLAG_ZEROPAD_ON_FAIL);
 
-    static bool IsSignatureValid(const std::string& signature);
-    static uint64_t ScanBuffer(const std::vector<uint8_t>& buffer,
-        const std::string& signature, uint64_t baseAddress = 0);
-    static std::vector<uint64_t> ScanBufferAll(
-        const std::vector<uint8_t>& buffer, const std::string& signature,
-        uint64_t baseAddress = 0, size_t maxResults = 0);
-    // Advanced patterns support nibble wildcards (A? and ?F) and typed captures.
+    // Compiled patterns support nibble wildcards (A? and ?F) and typed captures.
     static DMAResult<DMACompiledPattern> CompilePattern(
         const std::string& signature,
         const std::vector<DMAScanCapture>& captures = {});
@@ -329,40 +241,6 @@ public:
     DMAResult<DMACodeCaveScanReport> FindCodeCaves(
         const std::string& moduleName, size_t minimumSize,
         const DMACodeCaveOptions& options = {}) const;
-    void QueueModuleScan(const std::string& moduleName,
-        const std::string& scanName, const std::string& signature);
-    void QueueModuleScanAll(const std::string& moduleName,
-        const std::string& scanName, const std::string& signature);
-    bool ExecuteModuleScans();
-    uint64_t GetScanResult(const std::string& scanName) const;
-    std::vector<uint64_t> GetScanResultAll(const std::string& scanName) const;
-    void ClearScanResults();
-    uint64_t SigScanHeap(const std::string& signature);
-    std::vector<uint64_t> SigScanHeapAll(const std::string& signature,
-        size_t maxResults = 0);
-
-    template <typename T>
-    bool AddScatter(uint64_t address, T* outBuffer)
-    {
-        static_assert(std::is_trivially_copyable<T>::value,
-            "Scatter reads require a trivially copyable type");
-        return PrepareScatterSplit(address, outBuffer, sizeof(T));
-    }
-
-    bool AddScatterRaw(uint64_t address, void* outBuffer, size_t size);
-
-    template <typename T>
-    bool AddScatterWrite(uint64_t address, const T& value)
-    {
-        static_assert(std::is_trivially_copyable<T>::value,
-            "Scatter writes require a trivially copyable type");
-        return AddScatterWriteRaw(address, &value, sizeof(T));
-    }
-
-    bool AddScatterWriteRaw(uint64_t address, const void* buffer, size_t size);
-    bool ExecuteScatter();
-    bool ResetScatter();
-
     // The callback runs on the monitor thread. Stop before manually changing
     // lifecycle state; auto-re-attachment resets process-specific caches.
     bool StartProcessMonitor(const std::string& processName,
@@ -417,6 +295,3 @@ public:
     DMAOperationResult WriteVfs(const std::string& path, uint64_t offset,
         const void* buffer, size_t size);
 };
-
-// Compatibility alias for the original public name.
-using _DMA = DMA;

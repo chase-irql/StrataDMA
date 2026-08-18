@@ -374,7 +374,6 @@ DMAResult<DMACR3RecoveryReport> DMA::RecoverCR3(DWORD pid,
             moduleCache[NormalizeName(validationModule)] = {
                 validatedModule.baseAddress, validatedModule.imageSize
             };
-            RecreateScatterHandle();
         }
         result.operation = DMAOperationResult::Success();
         result.operation.pid = pid;

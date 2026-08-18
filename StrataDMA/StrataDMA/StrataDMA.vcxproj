@@ -22,7 +22,7 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{defb02c3-b77b-45a3-a5a8-c7484d42ec18}</ProjectGuid>
-    <RootNamespace>TeekoDMALib</RootNamespace>
+    <RootNamespace>StrataDMALib</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -128,38 +128,37 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Advanced.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Backend.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Backend.Interface.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Context.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Input.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Module.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Pattern.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Scanner.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.System.cpp" />
-    <ClCompile Include="Teeko-DMA\DMA.Types.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Advanced.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Backend.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Backend.Interface.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Context.cpp" />
+    <ClCompile Include="StrataDMA\DMA.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Input.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Module.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Scanner.cpp" />
+    <ClCompile Include="StrataDMA\DMA.System.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Types.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Teeko-DMA\deps\leechcore.h" />
-    <ClInclude Include="Teeko-DMA\deps\vmmdll.h" />
-    <ClInclude Include="Teeko-DMA\DMA.Backend.hpp" />
-    <ClInclude Include="Teeko-DMA\DMA.Context.hpp" />
-    <ClInclude Include="Teeko-DMA\DMA.hpp" />
-    <ClInclude Include="Teeko-DMA\DMA.Types.hpp" />
+    <ClInclude Include="StrataDMA\deps\leechcore.h" />
+    <ClInclude Include="StrataDMA\deps\vmmdll.h" />
+    <ClInclude Include="StrataDMA\DMA.Backend.hpp" />
+    <ClInclude Include="StrataDMA\DMA.Context.hpp" />
+    <ClInclude Include="StrataDMA\DMA.hpp" />
+    <ClInclude Include="StrataDMA\DMA.Types.hpp" />
   </ItemGroup>
   <ItemGroup>
-    <Library Include="Teeko-DMA\libs\leechcore.lib" />
-    <Library Include="Teeko-DMA\libs\vmm.lib" />
+    <Library Include="StrataDMA\libs\leechcore.lib" />
+    <Library Include="StrataDMA\libs\vmm.lib" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="Teeko-DMA\deps\info.db">
+    <None Include="StrataDMA\deps\info.db">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CopyRuntimeData" AfterTargets="Build">
-    <Copy SourceFiles="$(ProjectDir)Teeko-DMA\deps\info.db"
+    <Copy SourceFiles="$(ProjectDir)StrataDMA\deps\info.db"
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true" />
   </Target>

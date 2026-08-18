@@ -16,8 +16,8 @@ jobs:
       - name: Configure
         run: >-
           cmake -S . -B build -A x64
-          -DTEEKO_DMA_BUILD_EXAMPLE=OFF
-          -DTEEKO_DMA_BUILD_TESTS=ON
+          -DSTRATA_DMA_BUILD_EXAMPLE=OFF
+          -DSTRATA_DMA_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config ${{ matrix.configuration }} --parallel
       - name: Test

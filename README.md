@@ -1,4 +1,4 @@
-# Teeko DMA Lib
+# StrataDMA
 
 A C++17 wrapper around MemProcFS/VMMDLL for authorized DMA-backed Windows
 memory inspection. The repository vendors the MemProcFS 5.16.5 and LeechCore
@@ -13,8 +13,8 @@ Use it only on systems and processes you are authorized to inspect.
 - Attach by name or PID, process/module enumeration, monitoring, exit events,
   optional automatic re-attachment, expanded Windows process metadata, and
   native/WoW64 PEB inspection.
-- Strict legacy reads plus `DMAOperationResult`/`DMAResult<T>` APIs that report
-  status, PID, address, flags, and requested/transferred byte counts.
+- Strict `DMAOperationResult`/`DMAResult<T>` memory APIs that report status,
+  PID, address, flags, and requested/transferred byte counts.
 - Explicit process and kernel memory contexts, per-frame coherent read caching,
   page prefetch gathers, and RAII scatter batches with per-request results.
 - VAD/PTE memory-region maps and filters; module sections, imports, exports,
@@ -32,19 +32,17 @@ Use it only on systems and processes you are authorized to inspect.
   including edge events, reconnect discovery, dead zones, and normalized axes.
 - An injectable backend and hardware-free mock tests.
 
-`DMA` is the preferred class name. `_DMA` remains as a compatibility alias.
-
 ## Build and package
 
 The existing Visual Studio solution builds the example executable:
 
 ```powershell
-msbuild Teeko-DMA-Lib\Teeko-DMA-Lib.sln `
+msbuild StrataDMA\StrataDMA.sln `
   /p:Configuration=Release /p:Platform=x64
 ```
 
 The root CMake project provides the reusable static target
-`TeekoDMA::TeekoDMA`, the example, an install layout, and mock tests:
+`StrataDMA::StrataDMA`, the example, an install layout, and mock tests:
 
 ```powershell
 cmake -S . -B build -A x64
@@ -53,7 +51,7 @@ ctest --test-dir build -C Release --output-on-failure
 cmake --install build --config Release --prefix package
 ```
 
-Options are `TEEKO_DMA_BUILD_EXAMPLE` and `TEEKO_DMA_BUILD_TESTS`.
+Options are `STRATA_DMA_BUILD_EXAMPLE` and `STRATA_DMA_BUILD_TESTS`.
 
 At runtime, place `vmm.dll` and `leechcore.dll` beside the consuming executable.
 Place `info.db` there as well when InfoDB/symbol functionality is used. The
@@ -62,7 +60,7 @@ repository contains import libraries, not the two runtime DLLs.
 ## Initialization and attachment
 
 ```cpp
-#include "Teeko-DMA/DMA.hpp"
+#include "StrataDMA/DMA.hpp"
 
 DMA dma;
 DMAInitializationOptions options;
@@ -77,8 +75,7 @@ if (!dma.Initialize(options) || !dma.Attach("target.exe")) {
 }
 ```
 
-An empty memory-map path uses `%TEMP%\mmap.txt`. The legacy
-`Initialize(true, false)` overload remains supported.
+An empty memory-map path uses `%TEMP%\mmap.txt`.
 
 For duplicate process names, use `FindProcessIds`, inspect each
 `DMAProcessInfo`, and call `Attach(pid)`. `GetProcesses`, `GetModules`, and
@@ -130,8 +127,7 @@ auto exported = dma.ExportPhysicalMemoryMap("C:\\DMA\\mmap.txt");
 
 ## Results and memory contexts
 
-Legacy `TryRead`, `ReadRaw`, and `WriteRaw` return `bool`. New code can retain
-failure details:
+Memory operations return structured results that retain failure details:
 
 ```cpp
 auto health = dma.ReadResult<int>(player + 0x100);
@@ -168,7 +164,7 @@ call `Clear()` when the next update begins.
 
 ## Scatter batches
 
-The preferred scatter API owns its handle and is single-use:
+The scatter API owns its handle and is single-use:
 
 ```cpp
 int health = 0;
@@ -186,8 +182,7 @@ for (const auto& request : executed.value) {
 ```
 
 Requests are split at 4 KiB boundaries and recombined into one result per user
-request. Buffers must remain alive through `Execute`. The original
-`AddScatter`/`ExecuteScatter` API remains available for source compatibility.
+request. Buffers must remain alive through `Execute`.
 
 ## Regions, modules, and symbols
 
@@ -246,7 +241,7 @@ auto matches = dma.ScanModuleAdvanced(
 
 `nthMatch` is one-based (`0` means all). `maxResults == 0` means unlimited.
 Numeric relative captures contain the resolved absolute address; byte captures
-retain their raw bytes. The simpler queue and `ScanBuffer(All)` APIs remain.
+retain their raw bytes.
 
 Code-cave scanning defaults to sections that are RWX in the PE header and also
 RWX in the live PTE map. It verifies actual memory bytes and accepts zero and
@@ -325,9 +320,9 @@ All VMMDLL function calls are contained in `DMA.Backend.cpp`. Implement
 without hardware. Optional methods return `DMAStatus::Unsupported` unless the
 mock overrides them.
 
-CTest runs seven hardware-independent executables. The suites cover lifecycle
+CTest runs six hardware-independent executables. The suites cover lifecycle
 and initialization errors, strict and partial memory transfers, pointer chains,
-process/kernel contexts, monitoring, frame caching, legacy and RAII scatter,
+process/kernel contexts, monitoring, frame caching, RAII scatter,
 patterns and captures, parallel/region/section scans, snapshots, symbols,
 PE-dump reconstruction, CR3 recovery and rollback, native/WoW64 PEB parsing,
 physical-map export, RWX cave scanning, registry, VFS, and unsupported backend
@@ -337,8 +332,8 @@ test core, and GitHub Actions runs Debug and Release builds.
 
 ```powershell
 cmake -S . -B build -A x64 `
-  -DTEEKO_DMA_BUILD_EXAMPLE=OFF `
-  -DTEEKO_DMA_BUILD_TESTS=ON
+  -DSTRATA_DMA_BUILD_EXAMPLE=OFF `
+  -DSTRATA_DMA_BUILD_TESTS=ON
 cmake --build build --config Debug --parallel
 ctest --test-dir build -C Debug --output-on-failure
 
@@ -358,7 +353,7 @@ compiled example, matching `vmm.dll`, `leechcore.dll`, `info.db`, and the symbol
 support DLLs from the same MemProcFS release to the acquisition PC, then run:
 
 ```powershell
-.\teeko_dma_example.exe --hardware-test explorer.exe
+.\strata_dma_example.exe --hardware-test explorer.exe
 ```
 
 It validates initialization/version discovery, the physical map, normal attach
@@ -376,13 +371,13 @@ then input support. Test writes and DTB changes last.
 
 ## Source layout
 
-- `DMA.hpp`: main public facade and compatibility API.
+- `DMA.hpp`: main public facade.
 - `DMA.Types.*`: result and data-transfer types.
 - `DMA.Backend.*`: injectable interface and native VMMDLL adapter.
 - `DMA.Context.*`: process/kernel contexts, frame cache, and RAII scatter.
 - `DMA.Advanced.cpp`: results, maps, symbols, snapshots, monitoring, registry,
   and VFS facade methods.
-- `DMA.Pattern.cpp` and `DMA.Scanner.cpp`: legacy and advanced scanners.
+- `DMA.Scanner.cpp`: compiled-pattern and module scanners.
 - `DMA.System.cpp`: process/PEB metadata, CR3 recovery, physical maps, and
   permission-aware code-cave discovery.
 - `DMA.Module.cpp`: PE reconstruction.

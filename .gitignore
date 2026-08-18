@@ -365,3 +365,4 @@ MigrationBackup/
 
 # CMake
 out/
+/build/

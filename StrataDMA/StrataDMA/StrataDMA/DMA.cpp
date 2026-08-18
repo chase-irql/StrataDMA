@@ -12,10 +12,6 @@
 #include <utility>
 
 namespace {
-constexpr uint64_t kPageMask = 0xFFF;
-constexpr size_t kPageSize = 0x1000;
-constexpr size_t kHeapChunkSize = 0x1000000;
-
 template <typename T>
 T LoadUnaligned(const uint8_t* source)
 {
@@ -187,42 +183,12 @@ bool DMA::CacheModule(const std::string& moduleName) {
     return false;
 }
 
-std::vector<HeapRegion> DMA::GetHeapRegions() {
-    std::vector<HeapRegion> heaps;
-    if (!IsAttached())
-        return heaps;
-    std::vector<DMAMemoryRegion> regions;
-    if (!backend->GetMemoryRegions(targetPID, true, false, regions))
-        return heaps;
-    for (const auto& region : regions) {
-        if (!region.privateMemory || region.image || region.mappedFile ||
-            region.teb || region.stack || region.size == 0 ||
-            region.size > 0x80000000) {
-            continue;
-        }
-        heaps.push_back({ region.baseAddress, region.EndAddress() });
-    }
-    return heaps;
-}
-
 DMA::DMA(std::shared_ptr<IVmmBackend> customBackend)
     : backend(customBackend ? std::move(customBackend) : CreateVmmdllBackend())
 {
 }
 
 DMA::~DMA() { Disconnect(); }
-
-/// <summary>
-/// Initializes the VMMDLL interface with default FPGA settings.
-/// </summary>
-/// <returns>True if initialization was successful, false otherwise.</returns>
-bool DMA::Initialize(bool memMap, bool debug)
-{
-    DMAInitializationOptions options;
-    options.useMemoryMap = memMap;
-    options.debug = debug;
-    return Initialize(options);
-}
 
 bool DMA::Initialize(const DMAInitializationOptions& options)
 {
@@ -261,7 +227,7 @@ bool DMA::Initialize(const DMAInitializationOptions& options)
 
     auto attemptInitialize = [&](bool includeMemoryMap) {
         std::vector<std::string> arguments = {
-            "Teeko-DMA-Lib", "-device", options.device
+            "StrataDMA", "-device", options.device
         };
         if (options.debug) {
             arguments.push_back("-v");
@@ -323,16 +289,10 @@ void DMA::Disconnect() {
 
 void DMA::ResetAttachmentState()
 {
-    legacyScatter.reset();
-    scatterReadStatuses.clear();
-    scatterHasWrites = false;
     targetPID = 0;
     mainModuleBase = 0;
     attachedMainModuleName.clear();
     moduleCache.clear();
-    queuedModuleScans.clear();
-    scanResults.clear();
-    scanResultsMulti.clear();
     gafAsyncKeyStateExport = 0;
     gptCursorAsyncExport = 0;
     win_logon_pid = 0;
@@ -355,19 +315,6 @@ void DMA::Detach()
     StopKeyboardThread();
     StopGamepadThread();
     ResetAttachmentState();
-}
-
-bool DMA::RecreateScatterHandle()
-{
-    legacyScatter.reset();
-    scatterReadStatuses.clear();
-    scatterHasWrites = false;
-    if (!IsInitialized() || targetPID == 0)
-        return false;
-    legacyScatter = backend->CreateScatter(targetPID, scatterFlags);
-    if (!legacyScatter)
-        SetLastError("VMMDLL_Scatter_Initialize failed.");
-    return legacyScatter != nullptr;
 }
 
 /// <summary>
@@ -413,10 +360,6 @@ bool DMA::Attach(DWORD pid, const std::string& mainModuleName)
     if (!mainModuleName.empty())
         moduleCache[NormalizeName(mainModuleName)] = { module.baseAddress, module.imageSize };
 
-    if (!RecreateScatterHandle()) {
-        ResetAttachmentState();
-        return false;
-    }
     SetLastError({});
     return true;
 }
@@ -495,8 +438,8 @@ bool DMA::IsCR3Valid() {
         return false;
 
     // Use NOCACHE to ensure we are querying the physical memory state right now
-    uint16_t magic = Read<uint16_t>(mainModuleBase);
-    return magic == 0x5A4D; // 0x5A4D is 'MZ'
+    const auto magic = ReadResult<uint16_t>(mainModuleBase);
+    return magic && magic.value == 0x5A4D; // 0x5A4D is 'MZ'
 }
 
 /// <summary>
@@ -574,38 +517,6 @@ std::vector<DMAModuleInfo> DMA::GetModules(bool refresh)
 }
 
 /// <summary>
-/// Reads raw memory from the target process.
-/// </summary>
-/// <param name="address">Target virtual address.</param>
-/// <param name="buffer">Local buffer to store the read data.</param>
-/// <param name="size">Number of bytes to read.</param>
-/// <param name="flags">VMMDLL flags (e.g., VMMDLL_FLAG_NOCACHE).</param>
-/// <returns>True if the read was successful.</returns>
-bool DMA::ReadRaw(uint64_t address, void* buffer, size_t size, ULONG64 flags) {
-    return ReadRawEx(targetPID, address, buffer, size, flags);
-}
-
-bool DMA::ReadRawEx(DWORD pid, uint64_t address, void* buffer, size_t size,
-    ULONG64 flags) {
-    return static_cast<bool>(ReadRawResultEx(pid, address, buffer, size, flags));
-}
-
-/// <summary>
-/// Writes raw memory to the target process.
-/// </summary>
-/// <param name="address">Target virtual address.</param>
-/// <param name="buffer">Local buffer containing data to write.</param>
-/// <param name="size">Number of bytes to write.</param>
-/// <returns>True if the write was successful.</returns>
-bool DMA::WriteRaw(uint64_t address, const void* buffer, size_t size) {
-    return WriteRawEx(targetPID, address, buffer, size);
-}
-
-bool DMA::WriteRawEx(DWORD pid, uint64_t address, const void* buffer, size_t size) {
-    return static_cast<bool>(WriteRawResultEx(pid, address, buffer, size));
-}
-
-/// <summary>
 /// Follows a pointer chain to retrieve the final address.
 /// </summary>
 /// <param name="base">Base address to start from.</param>
@@ -625,10 +536,12 @@ bool DMA::TryReadChain(uint64_t base, const std::vector<uint64_t>& offsets,
 
     uint64_t currentAddress = base;
     for (const auto& offset : offsets) {
-        if (!TryRead(currentAddress, currentAddress) || currentAddress == 0 ||
-            offset > std::numeric_limits<uint64_t>::max() - currentAddress) {
+        const auto read = ReadResult<uint64_t>(currentAddress);
+        if (!read || read.value == 0 ||
+            offset > std::numeric_limits<uint64_t>::max() - read.value) {
             return false;
         }
+        currentAddress = read.value;
         currentAddress += offset;
     }
     result = currentAddress;
@@ -647,7 +560,7 @@ std::string DMA::ReadString(uint64_t address, size_t maxLength) {
         return "";
     std::string result;
     result.resize(maxLength);
-    if (ReadRaw(address, result.data(), maxLength)) {
+    if (ReadRawResult(address, result.data(), maxLength)) {
         size_t nullTerminator = result.find('\0');
         if (nullTerminator != std::string::npos) {
             result.resize(nullTerminator);
@@ -670,7 +583,7 @@ std::wstring DMA::ReadWString(uint64_t address, size_t maxLength) {
         return L"";
     std::wstring result;
     result.resize(maxLength);
-    if (ReadRaw(address, result.data(), maxLength * sizeof(wchar_t))) {
+    if (ReadRawResult(address, result.data(), maxLength * sizeof(wchar_t))) {
         size_t nullTerminator = result.find(L'\0');
         if (nullTerminator != std::wstring::npos) {
             result.resize(nullTerminator);
@@ -696,9 +609,10 @@ uint64_t DMA::ResolveRelative(uint64_t instructionAddress,
         return 0;
     if (offsetOffset > std::numeric_limits<uint64_t>::max() - instructionAddress)
         return 0;
-    int32_t relativeOffset = 0;
-    if (!TryRead(instructionAddress + offsetOffset, relativeOffset))
+    const auto relative = ReadResult<int32_t>(instructionAddress + offsetOffset);
+    if (!relative)
         return 0;
+    const int32_t relativeOffset = relative.value;
     if (instructionSize > std::numeric_limits<uint64_t>::max() - instructionAddress)
         return 0;
     const uint64_t nextInstruction = instructionAddress + instructionSize;
@@ -772,231 +686,4 @@ std::vector<uint8_t> DMA::DumpMemoryEx(DWORD pid, uint64_t address, size_t size,
         offset += chunkSize;
     }
     return buffer;
-}
-
-/// <summary>Add a signature scan request to the queue.</summary>
-void DMA::QueueModuleScan(const std::string& moduleName,
-    const std::string& scanName,
-    const std::string& signature) {
-    queuedModuleScans[moduleName].push_back({ scanName, signature });
-}
-
-/// <summary>Queue a multi-result signature scan. Use GetScanResultAll() to retrieve.</summary>
-void DMA::QueueModuleScanAll(const std::string& moduleName,
-    const std::string& scanName,
-    const std::string& signature) {
-    queuedModuleScans[moduleName].push_back({ scanName, signature, true });
-}
-
-/// <summary>Execute all queued module scans.</summary>
-bool DMA::ExecuteModuleScans() {
-    bool allSucceeded = true;
-    for (const auto& [modName, requests] : queuedModuleScans) {
-        uint64_t modBase = GetModuleBase(modName);
-        uint32_t modSize = GetModuleSize(modName);
-
-        if (modBase == 0 || modSize == 0) {
-            allSucceeded = false;
-            continue;
-        }
-
-        std::vector<uint8_t> localDump = DumpMemory(modBase, modSize);
-        if (localDump.empty()) {
-            allSucceeded = false;
-            continue;
-        }
-
-        for (const auto& req : requests) {
-            std::vector<PatternByte> pattern;
-            if (!ParseSignature(req.signature, pattern)) {
-                allSucceeded = false;
-                if (req.wantsAll)
-                    scanResultsMulti[req.name] = {};
-                else
-                    scanResults[req.name] = 0;
-                continue;
-            }
-            if (req.wantsAll)
-                scanResultsMulti[req.name] = ScanAllLocalBuffer(localDump, modBase, pattern);
-            else
-                scanResults[req.name] = ScanLocalBuffer(localDump, modBase, pattern);
-        }
-    }
-    queuedModuleScans.clear();
-    return allSucceeded;
-}
-
-/// <summary>Retrieve the result of a previous scan.</summary>
-uint64_t DMA::GetScanResult(const std::string& scanName) const {
-    const auto found = scanResults.find(scanName);
-    return found == scanResults.end() ? 0 : found->second;
-}
-
-/// <summary>Retrieve all results from a previous multi-result scan.</summary>
-std::vector<uint64_t> DMA::GetScanResultAll(const std::string& scanName) const {
-    auto it = scanResultsMulti.find(scanName);
-    if (it != scanResultsMulti.end())
-        return it->second;
-    return {};
-}
-
-void DMA::ClearScanResults()
-{
-    scanResults.clear();
-    scanResultsMulti.clear();
-}
-
-/// <summary>
-/// Scans the private heap of the process for a signature.
-/// WARNING: This can be slow as it reads significant amounts of memory.
-/// </summary>
-uint64_t DMA::SigScanHeap(const std::string& signature) {
-    const auto results = SigScanHeapAll(signature, 1);
-    return results.empty() ? 0 : results.front();
-}
-
-std::vector<uint64_t> DMA::SigScanHeapAll(const std::string& signature,
-    size_t maxResults) {
-    std::vector<PatternByte> pattern;
-    if (!ParseSignature(signature, pattern))
-        return {};
-
-    std::vector<uint64_t> results;
-    for (const auto& region : GetHeapRegions()) {
-        const uint64_t regionSize64 = region.end - region.start;
-        if (regionSize64 == 0 || regionSize64 > std::numeric_limits<size_t>::max())
-            continue;
-        const size_t regionSize = static_cast<size_t>(regionSize64);
-        const size_t overlap = pattern.size() > 1 ? pattern.size() - 1 : 0;
-
-        for (size_t offset = 0; offset < regionSize;) {
-            const size_t payloadSize = std::min(kHeapChunkSize, regionSize - offset);
-            const size_t readSize = std::min(regionSize - offset, payloadSize + overlap);
-            auto localDump = DumpMemory(region.start + offset, readSize,
-                VMMDLL_FLAG_NOCACHE | VMMDLL_FLAG_ZEROPAD_ON_FAIL);
-            if (!localDump.empty()) {
-                auto chunkResults = ScanAllLocalBuffer(localDump,
-                    region.start + offset, pattern,
-                    maxResults == 0 ? 0 : maxResults - results.size());
-                for (uint64_t match : chunkResults) {
-                    // Matches starting in overlap belong to the next chunk.
-                    if (match < region.start + offset + payloadSize)
-                        results.push_back(match);
-                    if (maxResults != 0 && results.size() >= maxResults)
-                        return results;
-                }
-            }
-            offset += payloadSize;
-        }
-    }
-    return results;
-}
-
-/// <summary>
-/// Internal helper: prepares one or more scatter entries to cover [address, address+size),
-/// splitting automatically at every 4 KB page boundary so no single VMMDLL element
-/// crosses a page. Both source address and destination pointer advance in lockstep.
-/// No heap allocation; writes go directly into the caller-supplied output buffer.
-/// </summary>
-bool DMA::PrepareScatterSplit(uint64_t address, void* outBuffer, size_t size)
-{
-    if (!legacyScatter || address == 0 || !outBuffer || size == 0 ||
-        size - 1 > std::numeric_limits<uint64_t>::max() - address)
-        return false;
-
-    auto* out = static_cast<uint8_t*>(outBuffer);
-    uint64_t cur = address;
-    size_t   remain = size;
-
-    while (remain > 0)
-    {
-        const size_t pageOffset = static_cast<size_t>(cur & kPageMask);
-        const size_t bytesThisPage = kPageSize - pageOffset;
-        const size_t chunk = (remain < bytesThisPage) ? remain : bytesThisPage;
-
-        scatterReadStatuses.push_back(
-            { static_cast<DWORD>(chunk), 0 });
-
-        if (!legacyScatter->PrepareRead(cur, out, static_cast<DWORD>(chunk),
-            &scatterReadStatuses.back().actual))
-        {
-            RecreateScatterHandle();
-            SetLastError("VMMDLL_Scatter_PrepareEx failed; queued scatter work was reset.");
-            return false;
-        }
-
-        cur += chunk;
-        out += chunk;
-        remain -= chunk;
-    }
-
-    return true;
-}
-
-/// <summary>
-/// Prepares a raw scatter read. Automatically splits across 4 KB page boundaries.
-/// Returns false on invalid inputs or if any VMMDLL prepare call fails.
-/// </summary>
-bool DMA::AddScatterRaw(uint64_t address, void* outBuffer, size_t size)
-{
-    return PrepareScatterSplit(address, outBuffer, size);
-}
-
-bool DMA::AddScatterWriteRaw(uint64_t address, const void* buffer, size_t size)
-{
-    if (!legacyScatter || address == 0 || !buffer || size == 0 ||
-        size - 1 > std::numeric_limits<uint64_t>::max() - address) {
-        return false;
-    }
-
-    auto* source = static_cast<const uint8_t*>(buffer);
-    uint64_t currentAddress = address;
-    size_t remaining = size;
-    while (remaining != 0) {
-        const size_t pageOffset = static_cast<size_t>(currentAddress & kPageMask);
-        const size_t chunk = std::min(remaining, kPageSize - pageOffset);
-        if (!legacyScatter->PrepareWrite(currentAddress, source,
-            static_cast<DWORD>(chunk))) {
-            RecreateScatterHandle();
-            SetLastError("VMMDLL_Scatter_PrepareWrite failed; queued scatter work was reset.");
-            return false;
-        }
-        scatterHasWrites = true;
-        currentAddress += chunk;
-        source += chunk;
-        remaining -= chunk;
-    }
-    return true;
-}
-
-/// <summary>Executes all prepared scatter reads and clears the handle for reuse.</summary>
-bool DMA::ExecuteScatter()
-{
-    if (!legacyScatter || (scatterReadStatuses.empty() && !scatterHasWrites))
-        return false;
-
-    const bool executed = static_cast<bool>(legacyScatter->Execute(scatterHasWrites));
-    bool complete = executed;
-    if (executed) {
-        for (const auto& status : scatterReadStatuses) {
-            if (status.actual != status.expected) {
-                complete = false;
-                break;
-            }
-        }
-    }
-
-    // PrepareEx retains caller buffer pointers for the lifetime of the handle.
-    // Recreate it after every batch so stack/local output buffers are safe to release.
-    const bool reset = RecreateScatterHandle();
-    if (!executed)
-        SetLastError("VMMDLL scatter execution failed.");
-    else if (!complete)
-        SetLastError("One or more scatter reads returned only partial data.");
-    return complete && reset;
-}
-
-bool DMA::ResetScatter()
-{
-    return RecreateScatterHandle();
 }

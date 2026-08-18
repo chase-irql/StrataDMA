@@ -437,8 +437,3 @@ struct DMANormalizedGamepadState {
     float thumbRY = 0.0f;
     bool connected = false;
 };
-
-struct HeapRegion {
-    uint64_t start = 0;
-    uint64_t end = 0;
-};

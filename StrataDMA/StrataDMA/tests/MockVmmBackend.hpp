@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Teeko-DMA/DMA.hpp"
+#include "StrataDMA/DMA.hpp"
 
 #include <atomic>
 #include <cstddef>

@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace teeko::test {
+namespace strata::test {
 struct TestCase {
     std::string name;
     std::function<void()> function;
@@ -65,21 +65,21 @@ inline int RunAll(const char* suite)
 }
 }
 
-#define TEEKO_TEST_CASE(name) \
+#define STRATA_TEST_CASE(name) \
     static void name(); \
-    static ::teeko::test::Registrar registrar_##name(#name, &name); \
+    static ::strata::test::Registrar registrar_##name(#name, &name); \
     static void name()
 
-#define TEEKO_REQUIRE(expression) \
+#define STRATA_REQUIRE(expression) \
     do { \
         if (!(expression)) \
-            ::teeko::test::Fail(#expression, __FILE__, __LINE__); \
+            ::strata::test::Fail(#expression, __FILE__, __LINE__); \
     } while (false)
 
-#define TEEKO_REQUIRE_STATUS(operation, expected) \
+#define STRATA_REQUIRE_STATUS(operation, expected) \
     do { \
-        const auto& teeko_operation = (operation); \
-        if (teeko_operation.status != (expected)) \
-            ::teeko::test::Fail(#operation ".status == " #expected, \
-                __FILE__, __LINE__, teeko_operation.message); \
+        const auto& strata_operation = (operation); \
+        if (strata_operation.status != (expected)) \
+            ::strata::test::Fail(#operation ".status == " #expected, \
+                __FILE__, __LINE__, strata_operation.message); \
     } while (false)

@@ -54,90 +54,90 @@ std::vector<uint8_t> ReadFile(const std::filesystem::path& path)
 }
 }
 
-TEEKO_TEST_CASE(module_dump_rebuilds_file_layout_and_import_thunks)
+STRATA_TEST_CASE(module_dump_rebuilds_file_layout_and_import_thunks)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     fixture.Attach();
     StoreValidPe64(*fixture.backend);
-    const auto path = TemporaryFile("teeko_dma_module_dump_test.bin");
+    const auto path = TemporaryFile("strata_dma_module_dump_test.bin");
 
-    TEEKO_REQUIRE(fixture.dma.DumpModule("test.exe", path.string()));
+    STRATA_REQUIRE(fixture.dma.DumpModule("test.exe", path.string()));
     const auto bytes = ReadFile(path);
-    TEEKO_REQUIRE(bytes.size() == fixture.backend->modules[0].imageSize);
+    STRATA_REQUIRE(bytes.size() == fixture.backend->modules[0].imageSize);
 
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
         bytes.data() + 0x80);
-    TEEKO_REQUIRE(nt->OptionalHeader.FileAlignment == 0x1000);
-    TEEKO_REQUIRE(nt->OptionalHeader.DataDirectory[
+    STRATA_REQUIRE(nt->OptionalHeader.FileAlignment == 0x1000);
+    STRATA_REQUIRE(nt->OptionalHeader.DataDirectory[
         IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT].VirtualAddress == 0);
     const auto* section = IMAGE_FIRST_SECTION(nt);
-    TEEKO_REQUIRE(section->PointerToRawData == section->VirtualAddress);
-    TEEKO_REQUIRE(section->SizeOfRawData == 0x200);
+    STRATA_REQUIRE(section->PointerToRawData == section->VirtualAddress);
+    STRATA_REQUIRE(section->SizeOfRawData == 0x200);
     uint64_t thunk = 0;
     std::memcpy(&thunk, bytes.data() + 0x300, sizeof(thunk));
-    TEEKO_REQUIRE(thunk == 0x400);
+    STRATA_REQUIRE(thunk == 0x400);
 
     std::error_code error;
     std::filesystem::remove(path, error);
-    TEEKO_REQUIRE(!error);
+    STRATA_REQUIRE(!error);
 }
 
-TEEKO_TEST_CASE(module_dump_rejects_invalid_or_truncated_headers)
+STRATA_TEST_CASE(module_dump_rejects_invalid_or_truncated_headers)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     fixture.Attach();
-    const auto path = TemporaryFile("teeko_dma_invalid_dump_test.bin");
+    const auto path = TemporaryFile("strata_dma_invalid_dump_test.bin");
 
     fixture.backend->Store<uint16_t>(MockVmmBackend::MemoryBase, 0);
-    TEEKO_REQUIRE(!fixture.dma.DumpModule("test.exe", path.string()));
-    TEEKO_REQUIRE(fixture.dma.GetLastError().find("DOS header") !=
+    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", path.string()));
+    STRATA_REQUIRE(fixture.dma.GetLastError().find("DOS header") !=
         std::string::npos);
 
     IMAGE_DOS_HEADER dos{};
     dos.e_magic = IMAGE_DOS_SIGNATURE;
     dos.e_lfanew = 0x7ff0;
     fixture.backend->Store(MockVmmBackend::MemoryBase, dos);
-    TEEKO_REQUIRE(!fixture.dma.DumpModule("test.exe", path.string()));
-    TEEKO_REQUIRE(fixture.dma.GetLastError().find("PE header") !=
+    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", path.string()));
+    STRATA_REQUIRE(fixture.dma.GetLastError().find("PE header") !=
         std::string::npos);
 }
 
-TEEKO_TEST_CASE(memory_dump_obeys_pid_and_partial_read_contracts)
+STRATA_TEST_CASE(memory_dump_obeys_pid_and_partial_read_contracts)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     fixture.Attach();
     fixture.backend->Fill(0x1800, 32, 0x5a);
     auto bytes = fixture.dma.DumpMemory(0x1800, 32);
-    TEEKO_REQUIRE(bytes.size() == 32);
-    TEEKO_REQUIRE(bytes.front() == 0x5a && bytes.back() == 0x5a);
+    STRATA_REQUIRE(bytes.size() == 32);
+    STRATA_REQUIRE(bytes.front() == 0x5a && bytes.back() == 0x5a);
 
     fixture.backend->partialReadLimit = 8;
     bytes = fixture.dma.DumpMemory(0x1800, 32);
-    TEEKO_REQUIRE(bytes.size() == 32);
-    TEEKO_REQUIRE(bytes[7] == 0x5a && bytes[8] == 0);
+    STRATA_REQUIRE(bytes.size() == 32);
+    STRATA_REQUIRE(bytes[7] == 0x5a && bytes[8] == 0);
 
     bytes = fixture.dma.DumpMemoryEx(MockVmmBackend::TargetPid, 0x1800, 32);
-    TEEKO_REQUIRE(bytes.size() == 32);
+    STRATA_REQUIRE(bytes.size() == 32);
     bytes = fixture.dma.DumpMemoryEx(MockVmmBackend::TargetPid, 0x1800, 32,
         VMMDLL_FLAG_NOCACHE);
-    TEEKO_REQUIRE(bytes.size() == 8);
-    TEEKO_REQUIRE(fixture.backend->lastReadPid == MockVmmBackend::TargetPid);
+    STRATA_REQUIRE(bytes.size() == 8);
+    STRATA_REQUIRE(fixture.backend->lastReadPid == MockVmmBackend::TargetPid);
 }
 
-TEEKO_TEST_CASE(module_dump_reports_missing_module_and_output_failures)
+STRATA_TEST_CASE(module_dump_reports_missing_module_and_output_failures)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     fixture.Attach();
-    TEEKO_REQUIRE(!fixture.dma.DumpModule("missing.dll", "unused.bin"));
-    TEEKO_REQUIRE(!fixture.dma.DumpModule("test.exe", ""));
+    STRATA_REQUIRE(!fixture.dma.DumpModule("missing.dll", "unused.bin"));
+    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", ""));
 
     StoreValidPe64(*fixture.backend);
-    const auto impossible = TemporaryFile("teeko_dma_missing_directory") /
+    const auto impossible = TemporaryFile("strata_dma_missing_directory") /
         "dump.bin";
-    TEEKO_REQUIRE(!fixture.dma.DumpModule("test.exe", impossible.string()));
-    TEEKO_REQUIRE(fixture.dma.GetLastError().find("open") != std::string::npos);
+    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", impossible.string()));
+    STRATA_REQUIRE(fixture.dma.GetLastError().find("open") != std::string::npos);
 }

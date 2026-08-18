@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-TEEKO_TEST_CASE(native_peb_fields_are_parsed_from_stable_offsets)
+STRATA_TEST_CASE(native_peb_fields_are_parsed_from_stable_offsets)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
@@ -29,17 +29,17 @@ TEEKO_TEST_CASE(native_peb_fields_are_parsed_from_stable_offsets)
 
     auto peb = fixture.dma.GetProcessEnvironmentBlock(
         MockVmmBackend::TargetPid);
-    TEEKO_REQUIRE(peb);
-    TEEKO_REQUIRE(!peb.value.is32Bit);
-    TEEKO_REQUIRE(peb.value.inheritedAddressSpace);
-    TEEKO_REQUIRE(peb.value.beingDebugged);
-    TEEKO_REQUIRE(peb.value.imageBaseAddress == image);
-    TEEKO_REQUIRE(peb.value.loaderDataAddress == loader);
-    TEEKO_REQUIRE(peb.value.processParametersAddress == parameters);
-    TEEKO_REQUIRE(peb.value.processHeapAddress == heap);
+    STRATA_REQUIRE(peb);
+    STRATA_REQUIRE(!peb.value.is32Bit);
+    STRATA_REQUIRE(peb.value.inheritedAddressSpace);
+    STRATA_REQUIRE(peb.value.beingDebugged);
+    STRATA_REQUIRE(peb.value.imageBaseAddress == image);
+    STRATA_REQUIRE(peb.value.loaderDataAddress == loader);
+    STRATA_REQUIRE(peb.value.processParametersAddress == parameters);
+    STRATA_REQUIRE(peb.value.processHeapAddress == heap);
 }
 
-TEEKO_TEST_CASE(wow64_peb_selection_and_32bit_pointers_are_supported)
+STRATA_TEST_CASE(wow64_peb_selection_and_32bit_pointers_are_supported)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
@@ -59,48 +59,48 @@ TEEKO_TEST_CASE(wow64_peb_selection_and_32bit_pointers_are_supported)
 
     auto wow64 = fixture.dma.GetProcessEnvironmentBlock(
         MockVmmBackend::TargetPid, true);
-    TEEKO_REQUIRE(wow64 && wow64.value.is32Bit);
-    TEEKO_REQUIRE(wow64.value.readImageFileExecOptions);
-    TEEKO_REQUIRE(wow64.value.imageBaseAddress == image);
-    TEEKO_REQUIRE(wow64.value.processHeapAddress == heap);
+    STRATA_REQUIRE(wow64 && wow64.value.is32Bit);
+    STRATA_REQUIRE(wow64.value.readImageFileExecOptions);
+    STRATA_REQUIRE(wow64.value.imageBaseAddress == image);
+    STRATA_REQUIRE(wow64.value.processHeapAddress == heap);
 
     auto native = fixture.dma.GetProcessEnvironmentBlock(
         MockVmmBackend::TargetPid, false);
-    TEEKO_REQUIRE(native && !native.value.is32Bit);
-    TEEKO_REQUIRE(native.value.address == 0x8000);
+    STRATA_REQUIRE(native && !native.value.is32Bit);
+    STRATA_REQUIRE(native.value.address == 0x8000);
 }
 
-TEEKO_TEST_CASE(peb_lookup_reports_missing_addresses_and_partial_reads)
+STRATA_TEST_CASE(peb_lookup_reports_missing_addresses_and_partial_reads)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     fixture.backend->processes[0].pebAddress = 0;
     auto missing = fixture.dma.GetProcessEnvironmentBlock(
         MockVmmBackend::TargetPid);
-    TEEKO_REQUIRE(!missing);
-    TEEKO_REQUIRE_STATUS(missing.operation, DMAStatus::NotFound);
+    STRATA_REQUIRE(!missing);
+    STRATA_REQUIRE_STATUS(missing.operation, DMAStatus::NotFound);
 
     fixture.backend->processes[0].pebAddress = 0x8000;
     fixture.backend->partialReadLimit = 4;
     auto partial = fixture.dma.GetProcessEnvironmentBlock(
         MockVmmBackend::TargetPid);
-    TEEKO_REQUIRE(!partial);
-    TEEKO_REQUIRE_STATUS(partial.operation, DMAStatus::PartialTransfer);
+    STRATA_REQUIRE(!partial);
+    STRATA_REQUIRE_STATUS(partial.operation, DMAStatus::PartialTransfer);
 }
 
-TEEKO_TEST_CASE(cr3_recovery_short_circuits_when_current_mapping_is_valid)
+STRATA_TEST_CASE(cr3_recovery_short_circuits_when_current_mapping_is_valid)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     auto recovery = fixture.dma.RecoverCR3(MockVmmBackend::TargetPid,
         "test.exe");
-    TEEKO_REQUIRE(recovery);
-    TEEKO_REQUIRE(!recovery.value.recoveryNeeded);
-    TEEKO_REQUIRE(recovery.value.attempts.empty());
-    TEEKO_REQUIRE(!fixture.backend->pluginsInitialized);
+    STRATA_REQUIRE(recovery);
+    STRATA_REQUIRE(!recovery.value.recoveryNeeded);
+    STRATA_REQUIRE(recovery.value.attempts.empty());
+    STRATA_REQUIRE(!fixture.backend->pluginsInitialized);
 }
 
-TEEKO_TEST_CASE(cr3_recovery_tests_candidates_and_returns_diagnostics)
+STRATA_TEST_CASE(cr3_recovery_tests_candidates_and_returns_diagnostics)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
@@ -111,16 +111,16 @@ TEEKO_TEST_CASE(cr3_recovery_tests_candidates_and_returns_diagnostics)
     options.pollInterval = std::chrono::milliseconds(1);
     auto recovery = fixture.dma.RecoverCR3(MockVmmBackend::TargetPid,
         "test.exe", options);
-    TEEKO_REQUIRE(recovery);
-    TEEKO_REQUIRE(fixture.backend->pluginsInitialized);
-    TEEKO_REQUIRE(recovery.value.recoveryNeeded);
-    TEEKO_REQUIRE(recovery.value.recoveredDtb == MockVmmBackend::ValidDtb);
-    TEEKO_REQUIRE(recovery.value.attempts.size() >= 3);
-    TEEKO_REQUIRE(recovery.value.attempts.back().operation);
-    TEEKO_REQUIRE(fixture.backend->configuredDtb == MockVmmBackend::ValidDtb);
+    STRATA_REQUIRE(recovery);
+    STRATA_REQUIRE(fixture.backend->pluginsInitialized);
+    STRATA_REQUIRE(recovery.value.recoveryNeeded);
+    STRATA_REQUIRE(recovery.value.recoveredDtb == MockVmmBackend::ValidDtb);
+    STRATA_REQUIRE(recovery.value.attempts.size() >= 3);
+    STRATA_REQUIRE(recovery.value.attempts.back().operation);
+    STRATA_REQUIRE(fixture.backend->configuredDtb == MockVmmBackend::ValidDtb);
 }
 
-TEEKO_TEST_CASE(cr3_failure_restores_original_dtb)
+STRATA_TEST_CASE(cr3_failure_restores_original_dtb)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
@@ -133,14 +133,14 @@ TEEKO_TEST_CASE(cr3_failure_restores_original_dtb)
     options.pollInterval = std::chrono::milliseconds(1);
     auto recovery = fixture.dma.RecoverCR3(MockVmmBackend::TargetPid,
         "test.exe", options);
-    TEEKO_REQUIRE(!recovery);
-    TEEKO_REQUIRE_STATUS(recovery.operation, DMAStatus::NotFound);
-    TEEKO_REQUIRE(recovery.value.restoredOriginalDtb);
-    TEEKO_REQUIRE(fixture.backend->configuredDtb == 0x111000);
-    TEEKO_REQUIRE(!recovery.value.attempts.empty());
+    STRATA_REQUIRE(!recovery);
+    STRATA_REQUIRE_STATUS(recovery.operation, DMAStatus::NotFound);
+    STRATA_REQUIRE(recovery.value.restoredOriginalDtb);
+    STRATA_REQUIRE(fixture.backend->configuredDtb == 0x111000);
+    STRATA_REQUIRE(!recovery.value.attempts.empty());
 }
 
-TEEKO_TEST_CASE(cr3_plugin_failure_and_timeout_are_bounded)
+STRATA_TEST_CASE(cr3_plugin_failure_and_timeout_are_bounded)
 {
     MockDmaFixture pluginFailure;
     pluginFailure.Initialize();
@@ -148,8 +148,8 @@ TEEKO_TEST_CASE(cr3_plugin_failure_and_timeout_are_bounded)
     pluginFailure.backend->failPluginInitialization = true;
     auto failed = pluginFailure.dma.RecoverCR3(MockVmmBackend::TargetPid,
         "test.exe");
-    TEEKO_REQUIRE(!failed);
-    TEEKO_REQUIRE_STATUS(failed.operation, DMAStatus::BackendError);
+    STRATA_REQUIRE(!failed);
+    STRATA_REQUIRE_STATUS(failed.operation, DMAStatus::BackendError);
 
     MockDmaFixture timeout;
     timeout.Initialize();
@@ -161,11 +161,11 @@ TEEKO_TEST_CASE(cr3_plugin_failure_and_timeout_are_bounded)
     options.pollInterval = std::chrono::milliseconds(1);
     auto timedOut = timeout.dma.RecoverCR3(MockVmmBackend::TargetPid,
         "test.exe", options);
-    TEEKO_REQUIRE(!timedOut);
-    TEEKO_REQUIRE_STATUS(timedOut.operation, DMAStatus::Timeout);
+    STRATA_REQUIRE(!timedOut);
+    STRATA_REQUIRE_STATUS(timedOut.operation, DMAStatus::Timeout);
 }
 
-TEEKO_TEST_CASE(attach_with_cr3_recovery_handles_pre_attach_failure)
+STRATA_TEST_CASE(attach_with_cr3_recovery_handles_pre_attach_failure)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
@@ -174,50 +174,50 @@ TEEKO_TEST_CASE(attach_with_cr3_recovery_handles_pre_attach_failure)
     options.timeout = std::chrono::milliseconds(20);
     options.pollInterval = std::chrono::milliseconds(1);
     auto attached = fixture.dma.AttachWithCR3Recovery("test.exe", options);
-    TEEKO_REQUIRE(attached);
-    TEEKO_REQUIRE(fixture.dma.IsAttached());
-    TEEKO_REQUIRE(fixture.dma.GetPID() == MockVmmBackend::TargetPid);
-    TEEKO_REQUIRE(attached.value.recoveredDtb == MockVmmBackend::ValidDtb);
+    STRATA_REQUIRE(attached);
+    STRATA_REQUIRE(fixture.dma.IsAttached());
+    STRATA_REQUIRE(fixture.dma.GetPID() == MockVmmBackend::TargetPid);
+    STRATA_REQUIRE(attached.value.recoveredDtb == MockVmmBackend::ValidDtb);
 }
 
-TEEKO_TEST_CASE(physical_ranges_are_sorted_refreshed_and_exported)
+STRATA_TEST_CASE(physical_ranges_are_sorted_refreshed_and_exported)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     std::reverse(fixture.backend->physicalRanges.begin(),
         fixture.backend->physicalRanges.end());
     auto ranges = fixture.dma.GetPhysicalMemoryMap(true);
-    TEEKO_REQUIRE(ranges && ranges.value.size() == 2);
-    TEEKO_REQUIRE(ranges.value[0].baseAddress == 0x1000);
-    TEEKO_REQUIRE(ranges.value[0].EndAddress() == 0xa000);
-    TEEKO_REQUIRE(ranges.value[0].LastAddress() == 0x9fff);
-    TEEKO_REQUIRE(std::find_if(fixture.backend->configWrites.begin(),
+    STRATA_REQUIRE(ranges && ranges.value.size() == 2);
+    STRATA_REQUIRE(ranges.value[0].baseAddress == 0x1000);
+    STRATA_REQUIRE(ranges.value[0].EndAddress() == 0xa000);
+    STRATA_REQUIRE(ranges.value[0].LastAddress() == 0x9fff);
+    STRATA_REQUIRE(std::find_if(fixture.backend->configWrites.begin(),
         fixture.backend->configWrites.end(), [](const auto& write) {
             return write.first == VMMDLL_OPT_REFRESH_SPECIFIC_PHYSMEMMAP;
         }) != fixture.backend->configWrites.end());
 
     const auto path = std::filesystem::temp_directory_path() /
-        "teeko_dma_physical_map_test.txt";
+        "strata_dma_physical_map_test.txt";
     auto exported = fixture.dma.ExportPhysicalMemoryMap(path.string());
-    TEEKO_REQUIRE(exported);
+    STRATA_REQUIRE(exported);
     std::ifstream input(path);
     std::string firstLine;
     std::getline(input, firstLine);
-    TEEKO_REQUIRE(firstLine == "0000000000001000 0000000000009fff");
+    STRATA_REQUIRE(firstLine == "0000000000001000 0000000000009fff");
     input.close();
     std::error_code error;
     std::filesystem::remove(path, error);
-    TEEKO_REQUIRE(!error);
+    STRATA_REQUIRE(!error);
 }
 
-TEEKO_TEST_CASE(physical_map_errors_are_structured)
+STRATA_TEST_CASE(physical_map_errors_are_structured)
 {
     MockDmaFixture fixture;
     fixture.Initialize();
     fixture.backend->failPhysicalMap = true;
     auto failed = fixture.dma.GetPhysicalMemoryMap();
-    TEEKO_REQUIRE(!failed);
-    TEEKO_REQUIRE_STATUS(failed.operation, DMAStatus::BackendError);
-    TEEKO_REQUIRE_STATUS(fixture.dma.ExportPhysicalMemoryMap(""),
+    STRATA_REQUIRE(!failed);
+    STRATA_REQUIRE_STATUS(failed.operation, DMAStatus::BackendError);
+    STRATA_REQUIRE_STATUS(fixture.dma.ExportPhysicalMemoryMap(""),
         DMAStatus::InvalidArgument);
 }

@@ -593,12 +593,12 @@ void MockDmaFixture::Initialize(bool plugins)
     DMAInitializationOptions options;
     options.useMemoryMap = false;
     options.initializePlugins = plugins;
-    TEEKO_REQUIRE(dma.Initialize(options));
+    STRATA_REQUIRE(dma.Initialize(options));
 }
 
 void MockDmaFixture::Attach()
 {
     if (!dma.IsInitialized())
         Initialize();
-    TEEKO_REQUIRE(dma.Attach("test.exe"));
+    STRATA_REQUIRE(dma.Attach("test.exe"));
 }

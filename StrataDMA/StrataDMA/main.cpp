@@ -4,7 +4,7 @@
 #include <thread>
 #include <vector>
 
-#include "Teeko-DMA/DMA.hpp"
+#include "StrataDMA/DMA.hpp"
 
 namespace {
 bool RunSelfTest()
@@ -12,15 +12,20 @@ bool RunSelfTest()
     const std::vector<uint8_t> bytes = {
         0x48, 0x8B, 0x01, 0x90, 0x48, 0x8B, 0xFF, 0x90
     };
-    const bool validPattern = DMA::IsSignatureValid("48 8B ? 90");
-    const bool rejectsInvalid = !DMA::IsSignatureValid("48 ZZ");
-    const uint64_t first = DMA::ScanBuffer(bytes, "48 8B ?? 90", 0x1000);
-    const auto all = DMA::ScanBufferAll(bytes, "48 8B ? 90", 0x1000);
-    const auto limited = DMA::ScanBufferAll(bytes, "48 8B ? 90", 0x1000, 1);
+    const auto pattern = DMA::CompilePattern("48 8B ? 90");
+    const auto invalid = DMA::CompilePattern("48 ZZ");
+    if (!pattern || invalid)
+        return false;
 
-    return validPattern && rejectsInvalid && first == 0x1000 &&
-        all == std::vector<uint64_t>{ 0x1000, 0x1004 } &&
-        limited == std::vector<uint64_t>{ 0x1000 };
+    const auto all = DMA::ScanBufferAdvanced(bytes, pattern.value, 0x1000);
+    DMAScanOptions limitedOptions;
+    limitedOptions.maxResults = 1;
+    const auto limited = DMA::ScanBufferAdvanced(bytes, pattern.value, 0x1000,
+        limitedOptions);
+
+    return all && limited && all.value.size() == 2 &&
+        all.value[0].address == 0x1000 && all.value[1].address == 0x1004 &&
+        limited.value.size() == 1 && limited.value[0].address == 0x1000;
 }
 
 int RunHardwareSmokeTest(const std::string& processName)
@@ -45,7 +50,7 @@ int RunHardwareSmokeTest(const std::string& processName)
         std::cout << '\n';
     };
 
-    std::cout << "Teeko DMA read-only hardware smoke test\n"
+    std::cout << "StrataDMA read-only hardware smoke test\n"
         << "Target process: " << processName << "\n\n";
 
     DMAInitializationOptions options;
@@ -153,15 +158,17 @@ auto main(int argc, char** argv) -> int
         return RunHardwareSmokeTest(argc > 2 ? argv[2] : "explorer.exe");
     if (argc > 1 && std::string(argv[1]) == "--help") {
         std::cout << "Usage:\n"
-            "  teeko_dma_example --self-test\n"
-            "  teeko_dma_example --hardware-test [process.exe]\n"
-            "  teeko_dma_example  (interactive input demo)\n";
+            "  strata_dma_example --self-test\n"
+            "  strata_dma_example --hardware-test [process.exe]\n"
+            "  strata_dma_example  (interactive input demo)\n";
         return 0;
     }
 
     auto& dma = DMA::Get();
 
-    if (!dma.Initialize(true, true)) {
+    DMAInitializationOptions options;
+    options.debug = true;
+    if (!dma.Initialize(options)) {
         std::cout << "[-] Failed to initialize DMA: "
             << dma.GetLastError() << '\n';
         return -1;

@@ -1,9 +1,9 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.14.36915.13 d17.14
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Teeko-DMA-Lib", "Teeko-DMA-Lib\Teeko-DMA-Lib.vcxproj", "{DEFB02C3-B77B-45A3-A5A8-C7484D42EC18}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "StrataDMA", "StrataDMA\StrataDMA.vcxproj", "{DEFB02C3-B77B-45A3-A5A8-C7484D42EC18}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
