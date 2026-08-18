@@ -124,7 +124,7 @@ bool AlignUp(uint64_t value, size_t alignment, uint64_t& aligned)
 }
 }
 
-DMAResult<DMAProcessInfo> DMA::GetProcessInfoResult(DWORD pid) const
+DMAResult<DMAProcessInfo> DMA::GetProcessInfo(DWORD pid) const
 {
     DMAResult<DMAProcessInfo> result;
     if (!IsInitialized()) {
@@ -148,7 +148,7 @@ DMAResult<DMAPebInfo> DMA::GetProcessEnvironmentBlock(DWORD pid,
     bool preferWow64) const
 {
     DMAResult<DMAPebInfo> result;
-    auto process = GetProcessInfoResult(pid);
+    auto process = GetProcessInfo(pid);
     if (!process) {
         result.operation = process.operation;
         return result;
@@ -378,7 +378,6 @@ DMAResult<DMACR3RecoveryReport> DMA::RecoverCR3(DWORD pid,
         result.operation = DMAOperationResult::Success();
         result.operation.pid = pid;
         result.operation.address = candidate.dtb;
-        SetLastError({});
         return result;
     }
 
@@ -391,7 +390,6 @@ DMAResult<DMACR3RecoveryReport> DMA::RecoverCR3(DWORD pid,
     result.operation = DMAOperationResult::Failure(DMAStatus::NotFound,
         "None of the MemProcFS DTB candidates validated the target module.");
     result.operation.pid = pid;
-    SetLastError(result.operation.message);
     return result;
 }
 
@@ -429,7 +427,8 @@ DMAResult<DMACR3RecoveryReport> DMA::AttachWithCR3Recovery(
 
     DMAProcessInfo process;
     backend->GetProcess(pid, process);
-    if (Attach(pid, processName)) {
+    auto attached = Attach(pid, processName);
+    if (attached) {
         result.value.pid = pid;
         result.value.moduleName = processName;
         result.value.originalDtb = process.dtb;
@@ -443,10 +442,12 @@ DMAResult<DMACR3RecoveryReport> DMA::AttachWithCR3Recovery(
     result = RecoverCR3(pid, processName, options);
     if (!result)
         return result;
-    if (!Attach(pid, processName)) {
-        result.operation = DMAOperationResult::Failure(DMAStatus::BackendError,
+    attached = Attach(pid, processName);
+    if (!attached) {
+        result.operation = attached;
+        result.operation.message =
             "The DTB validated, but attaching to the process still failed: " +
-            GetLastError());
+            attached.message;
         result.operation.pid = pid;
     }
     return result;

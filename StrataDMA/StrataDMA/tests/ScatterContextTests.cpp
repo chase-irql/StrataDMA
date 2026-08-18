@@ -26,7 +26,7 @@ STRATA_TEST_CASE(raii_scatter_reads_writes_and_reports_each_request)
     STRATA_REQUIRE(!executed.value[0].write);
     STRATA_REQUIRE(executed.value[0].operation.transferredBytes == sizeof(source));
     STRATA_REQUIRE(executed.value[1].write);
-    const auto written = fixture.dma.ReadResult<uint32_t>(0x1900);
+    const auto written = fixture.dma.Read<uint32_t>(0x1900);
     STRATA_REQUIRE(written && written.value == writeValue);
 
     auto secondExecution = batch.Execute();

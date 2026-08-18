@@ -76,10 +76,6 @@ private:
     bool processMonitorAutoReattach = true;
     int processMonitorPollMs = 500;
 
-    mutable std::mutex errorMutex;
-    std::string lastError;
-
-    void SetLastError(std::string message);
     void ResetAttachmentState();
     static std::string NormalizeName(const std::string& name);
 
@@ -104,25 +100,23 @@ public:
         return instance;
     }
 
-    bool Initialize(const DMAInitializationOptions& options);
+    DMAOperationResult Initialize(const DMAInitializationOptions& options);
     void Disconnect();
     bool IsInitialized() const noexcept
     {
         return backend && backend->IsInitialized();
     }
     bool IsAttached() const noexcept { return IsInitialized() && targetPID != 0; }
-    std::string GetLastError() const;
     DMAVersionInfo GetVmmVersion() const;
     uint32_t GetWindowsBuild() const;
 
-    bool Attach(const std::string& processName);
-    bool Attach(DWORD pid, const std::string& mainModuleName = {});
+    DMAOperationResult Attach(const std::string& processName);
+    DMAOperationResult Attach(DWORD pid, const std::string& mainModuleName = {});
     void Detach();
-    bool RefreshProcess();
+    DMAOperationResult RefreshProcess();
     std::vector<DWORD> FindProcessIds(const std::string& processName) const;
     std::vector<DMAProcessInfo> GetProcesses() const;
-    bool GetProcessInfo(DWORD pid, DMAProcessInfo& info) const;
-    DMAResult<DMAProcessInfo> GetProcessInfoResult(DWORD pid = 0) const;
+    DMAResult<DMAProcessInfo> GetProcessInfo(DWORD pid = 0) const;
     DMAResult<DMAPebInfo> GetProcessEnvironmentBlock(DWORD pid = 0,
         bool preferWow64 = true) const;
 
@@ -156,34 +150,33 @@ public:
 
     // Success requires every requested byte to be transferred. Results preserve
     // transfer counts and backend diagnostics.
-    DMAOperationResult ReadRawResult(uint64_t address, void* buffer, size_t size,
+    DMAOperationResult ReadRaw(uint64_t address, void* buffer, size_t size,
         ULONG64 flags = VMMDLL_FLAG_NOCACHE);
-    DMAOperationResult ReadRawResultEx(DWORD pid, uint64_t address, void* buffer,
+    DMAOperationResult ReadRaw(DWORD pid, uint64_t address, void* buffer,
         size_t size, ULONG64 flags = VMMDLL_FLAG_NOCACHE);
-    DMAOperationResult WriteRawResult(uint64_t address, const void* buffer, size_t size);
-    DMAOperationResult WriteRawResultEx(DWORD pid, uint64_t address,
+    DMAOperationResult WriteRaw(uint64_t address, const void* buffer, size_t size);
+    DMAOperationResult WriteRaw(DWORD pid, uint64_t address,
         const void* buffer, size_t size);
 
     template <typename T>
-    DMAResult<T> ReadResult(uint64_t address,
+    DMAResult<T> Read(uint64_t address,
         ULONG64 flags = VMMDLL_FLAG_NOCACHE)
     {
         static_assert(std::is_trivially_copyable<T>::value,
             "DMA reads require a trivially copyable type");
         DMAResult<T> result;
-        result.operation = ReadRawResult(address, &result.value, sizeof(T), flags);
+        result.operation = ReadRaw(address, &result.value, sizeof(T), flags);
         return result;
     }
 
-    uint64_t ReadChain(uint64_t base, const std::vector<uint64_t>& offsets);
-    bool TryReadChain(uint64_t base, const std::vector<uint64_t>& offsets,
-        uint64_t& result);
+    DMAResult<uint64_t> ReadChain(uint64_t base,
+        const std::vector<uint64_t>& offsets);
     std::string ReadString(uint64_t address, size_t maxLength = 256);
     std::wstring ReadWString(uint64_t address, size_t maxLength = 256);
     uint64_t ResolveRelative(uint64_t instructionAddress,
         uint32_t offsetOffset, uint32_t instructionSize);
-    bool VirtualToPhysical(uint64_t virtualAddress, uint64_t& physicalAddress) const;
-    bool PrefetchPages(const std::vector<uint64_t>& addresses) const;
+    DMAResult<uint64_t> VirtualToPhysical(uint64_t virtualAddress) const;
+    DMAOperationResult PrefetchPages(const std::vector<uint64_t>& addresses) const;
     // pid == 0 selects the current attachment. KernelContext adds VMMDLL's
     // kernel-memory PID flag to the selected session process.
     DMAMemoryContext ProcessContext(DWORD pid = 0,
@@ -253,13 +246,13 @@ public:
         return processMonitorRunning.load();
     }
 
-    bool DumpModule(const std::string& moduleName, const std::string& outPath);
+    DMAOperationResult DumpModule(const std::string& moduleName,
+        const std::string& outPath);
 
-    bool InitKeyboard(int pollMs = 10, bool debug = false);
+    DMAOperationResult InitKeyboard(int pollMs = 10, bool debug = false);
     void StopKeyboard();
     bool IsKeyboardInitialized() const noexcept { return kb_running.load(); }
-    bool InitGamepad(int pollMs = 4, bool debug = false);
-    bool InitGamepad(const DMAGamepadConfig& config);
+    DMAOperationResult InitGamepad(const DMAGamepadConfig& config);
     void StopGamepad();
     bool IsGamepadInitialized() const noexcept { return gamepad_running.load(); }
     GamepadState GetGamepadState() const;

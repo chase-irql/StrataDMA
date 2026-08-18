@@ -57,9 +57,9 @@ int RunHardwareSmokeTest(const std::string& processName)
     options.useMemoryMap = false;
     options.initializePlugins = true;
     options.waitForInitialization = true;
-    const bool initialized = dma.Initialize(options);
-    if (!check(initialized, "initialize VMMDLL",
-            initialized ? std::string{} : dma.GetLastError()))
+    const auto initialized = dma.Initialize(options);
+    if (!check(static_cast<bool>(initialized), "initialize VMMDLL",
+            initialized.message))
         return 1;
 
     const auto version = dma.GetVmmVersion();
@@ -74,7 +74,8 @@ int RunHardwareSmokeTest(const std::string& processName)
         physical ? std::to_string(physical.value.size()) + " ranges"
                  : physical.operation.message);
 
-    bool attached = dma.Attach(processName);
+    auto attachResult = dma.Attach(processName);
+    bool attached = static_cast<bool>(attachResult);
     if (!attached) {
         std::cout << "[INFO] Normal attachment failed; trying bounded CR3 "
             "recovery.\n";
@@ -93,13 +94,13 @@ int RunHardwareSmokeTest(const std::string& processName)
         return 1;
     }
 
-    const auto process = dma.GetProcessInfoResult();
+    const auto process = dma.GetProcessInfo();
     check(static_cast<bool>(process), "read expanded process metadata",
         process ? "PID " + std::to_string(process.value.pid)
                 : process.operation.message);
 
     const uint64_t base = dma.GetMainBase();
-    const auto mz = dma.ReadResult<uint16_t>(base);
+    const auto mz = dma.Read<uint16_t>(base);
     check(mz && mz.value == IMAGE_DOS_SIGNATURE, "read main-module MZ header",
         mz ? "base " + std::to_string(base) : mz.operation.message);
 
@@ -168,23 +169,32 @@ auto main(int argc, char** argv) -> int
 
     DMAInitializationOptions options;
     options.debug = true;
-    if (!dma.Initialize(options)) {
+    const auto initialized = dma.Initialize(options);
+    if (!initialized) {
         std::cout << "[-] Failed to initialize DMA: "
-            << dma.GetLastError() << '\n';
+            << initialized.message << '\n';
         return -1;
     }
 
-    if (!dma.Attach("svchost.exe")) {
+    const auto attached = dma.Attach("svchost.exe");
+    if (!attached) {
         std::cout << "[-] Failed to attach to svchost.exe: "
-            << dma.GetLastError() << '\n';
+            << attached.message << '\n';
         return -2;
     }
 
-    if (!dma.InitKeyboard(10, true))
-        std::cout << "[-] Failed to initialize keyboard\n";
+    const auto keyboard = dma.InitKeyboard(10, true);
+    if (!keyboard)
+        std::cout << "[-] Failed to initialize keyboard: "
+            << keyboard.message << '\n';
 
-    if (!dma.InitGamepad(4, true))
-        std::cout << "[-] Failed to initialize Xbox Gamepad\n";
+    DMAGamepadConfig gamepadConfig;
+    gamepadConfig.pollIntervalMs = 4;
+    gamepadConfig.debug = true;
+    const auto gamepad = dma.InitGamepad(gamepadConfig);
+    if (!gamepad)
+        std::cout << "[-] Failed to initialize Xbox Gamepad: "
+            << gamepad.message << '\n';
 
     std::cout << "\n[+] Polling started. Only active inputs will be printed.\n\n";
     while (true) {

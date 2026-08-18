@@ -22,18 +22,6 @@ T LoadUnaligned(const uint8_t* source)
 
 }
 
-void DMA::SetLastError(std::string message)
-{
-    std::lock_guard<std::mutex> lock(errorMutex);
-    lastError = std::move(message);
-}
-
-std::string DMA::GetLastError() const
-{
-    std::lock_guard<std::mutex> lock(errorMutex);
-    return lastError;
-}
-
 std::string DMA::NormalizeName(const std::string& name)
 {
     std::string normalized = name;
@@ -190,15 +178,13 @@ DMA::DMA(std::shared_ptr<IVmmBackend> customBackend)
 
 DMA::~DMA() { Disconnect(); }
 
-bool DMA::Initialize(const DMAInitializationOptions& options)
+DMAOperationResult DMA::Initialize(const DMAInitializationOptions& options)
 {
     Disconnect();
-    SetLastError({});
 
-    if (options.device.empty()) {
-        SetLastError("The MemProcFS device URI cannot be empty.");
-        return false;
-    }
+    if (options.device.empty())
+        return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
+            "The MemProcFS device URI cannot be empty.");
 
     std::string memoryMapPath = options.memoryMapPath;
     if (options.useMemoryMap && memoryMapPath.empty()) {
@@ -207,9 +193,9 @@ bool DMA::Initialize(const DMAInitializationOptions& options)
         }
         catch (const std::exception& exception) {
             if (!options.fallbackWithoutMemoryMap) {
-                SetLastError(std::string("Unable to resolve the temporary memory-map path: ") +
+                return DMAOperationResult::Failure(DMAStatus::IoError,
+                    std::string("Unable to resolve the temporary memory-map path: ") +
                     exception.what());
-                return false;
             }
         }
     }
@@ -221,8 +207,8 @@ bool DMA::Initialize(const DMAInitializationOptions& options)
     }
     if (options.useMemoryMap && !memoryMapAvailable &&
         !options.fallbackWithoutMemoryMap) {
-        SetLastError("The requested memory-map file does not exist: " + memoryMapPath);
-        return false;
+        return DMAOperationResult::Failure(DMAStatus::NotFound,
+            "The requested memory-map file does not exist: " + memoryMapPath);
     }
 
     auto attemptInitialize = [&](bool includeMemoryMap) {
@@ -244,34 +230,31 @@ bool DMA::Initialize(const DMAInitializationOptions& options)
 
         const auto result = backend->Initialize(arguments);
         hVMM = backend->NativeHandle();
-        if (!result) {
-            SetLastError(result.message);
-            return false;
-        }
+        if (!result)
+            return result;
         if (options.initializePlugins) {
             const auto plugins = backend->InitializePlugins();
             if (!plugins) {
-                SetLastError(plugins.message);
                 backend->Close();
                 hVMM = nullptr;
-                return false;
+                return plugins;
             }
         }
-        return true;
+        return DMAOperationResult::Success();
     };
 
-    if (memoryMapAvailable && attemptInitialize(true))
-        return true;
-
-    if (memoryMapAvailable && options.fallbackWithoutMemoryMap) {
+    if (memoryMapAvailable) {
+        auto initialized = attemptInitialize(true);
+        if (initialized || !options.fallbackWithoutMemoryMap)
+            return initialized;
         backend->Close();
         hVMM = nullptr;
-        return attemptInitialize(false);
     }
 
     return !options.useMemoryMap || options.fallbackWithoutMemoryMap
         ? attemptInitialize(false)
-        : false;
+        : DMAOperationResult::Failure(DMAStatus::NotFound,
+            "The requested memory-map file is unavailable.");
 }
 
 /// <summary>
@@ -321,36 +304,44 @@ void DMA::Detach()
 /// Attempts to find and attach to a target process by name.
 /// </summary>
 /// <param name="processName">Name of the process (e.g., "game.exe").</param>
-/// <returns>True if process found and scatter handle initialized.</returns>
-bool DMA::Attach(const std::string& processName) {
-    if (!IsInitialized()) {
-        SetLastError("Initialize DMA before attaching to a process.");
-        return false;
-    }
+/// <returns>The attachment result, including backend diagnostics on failure.</returns>
+DMAOperationResult DMA::Attach(const std::string& processName) {
+    if (!IsInitialized())
+        return DMAOperationResult::Failure(DMAStatus::NotInitialized,
+            "Initialize DMA before attaching to a process.");
+    if (processName.empty())
+        return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
+            "A process name is required.");
     DWORD pid = 0;
-    const auto result = backend->FindPid(processName, pid);
+    auto result = backend->FindPid(processName, pid);
     if (!result) {
-        SetLastError("Process not found: " + processName);
-        return false;
+        if (result.message.empty())
+            result.message = "Process not found: " + processName;
+        return result;
     }
     return Attach(pid, processName);
 }
 
-bool DMA::Attach(DWORD pid, const std::string& mainModuleName)
+DMAOperationResult DMA::Attach(DWORD pid, const std::string& mainModuleName)
 {
-    if (!IsInitialized() || pid == 0) {
-        SetLastError("A valid VMM handle and non-zero PID are required.");
-        return false;
-    }
+    if (!IsInitialized())
+        return DMAOperationResult::Failure(DMAStatus::NotInitialized,
+            "DMA is not initialized.");
+    if (pid == 0)
+        return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
+            "A non-zero PID is required.");
 
     Detach();
     targetPID = pid;
 
     DMAModuleInfo module;
-    if (!backend->GetModule(targetPID, mainModuleName, module)) {
-        SetLastError("Unable to resolve the process main module.");
+    auto moduleResult = backend->GetModule(targetPID, mainModuleName, module);
+    if (!moduleResult) {
         ResetAttachmentState();
-        return false;
+        if (moduleResult.message.empty())
+            moduleResult.message = "Unable to resolve the process main module.";
+        moduleResult.pid = pid;
+        return moduleResult;
     }
 
     mainModuleBase = module.baseAddress;
@@ -360,8 +351,10 @@ bool DMA::Attach(DWORD pid, const std::string& mainModuleName)
     if (!mainModuleName.empty())
         moduleCache[NormalizeName(mainModuleName)] = { module.baseAddress, module.imageSize };
 
-    SetLastError({});
-    return true;
+    auto result = DMAOperationResult::Success();
+    result.pid = pid;
+    result.address = module.baseAddress;
+    return result;
 }
 
 DMAVersionInfo DMA::GetVmmVersion() const
@@ -381,14 +374,6 @@ uint32_t DMA::GetWindowsBuild() const
     if (!IsInitialized() || !backend->ConfigGet(VMMDLL_OPT_WIN_VERSION_BUILD, build))
         return 0;
     return static_cast<uint32_t>(build);
-}
-
-bool DMA::GetProcessInfo(DWORD pid, DMAProcessInfo& info) const
-{
-    info = {};
-    if (!IsInitialized() || pid == 0)
-        return false;
-    return static_cast<bool>(backend->GetProcess(pid, info));
 }
 
 std::vector<DMAProcessInfo> DMA::GetProcesses() const
@@ -415,17 +400,19 @@ std::vector<DWORD> DMA::FindProcessIds(const std::string& processName) const
     return result;
 }
 
-bool DMA::RefreshProcess()
+DMAOperationResult DMA::RefreshProcess()
 {
     if (!IsAttached())
-        return false;
-    const bool success = static_cast<bool>(backend->ConfigSet(
-        VMMDLL_OPT_REFRESH_SPECIFIC_PROCESS | targetPID, 1));
-    if (success)
+        return DMAOperationResult::Failure(DMAStatus::NotAttached,
+            "DMA is not attached to a process.");
+    auto result = backend->ConfigSet(
+        VMMDLL_OPT_REFRESH_SPECIFIC_PROCESS | targetPID, 1);
+    result.pid = targetPID;
+    if (result)
         moduleCache.clear();
-    else
-        SetLastError("MemProcFS failed to refresh the attached process.");
-    return success;
+    else if (result.message.empty())
+        result.message = "MemProcFS failed to refresh the attached process.";
+    return result;
 }
 
 /// <summary>
@@ -438,7 +425,7 @@ bool DMA::IsCR3Valid() {
         return false;
 
     // Use NOCACHE to ensure we are querying the physical memory state right now
-    const auto magic = ReadResult<uint16_t>(mainModuleBase);
+    const auto magic = Read<uint16_t>(mainModuleBase);
     return magic && magic.value == 0x5A4D; // 0x5A4D is 'MZ'
 }
 
@@ -521,31 +508,44 @@ std::vector<DMAModuleInfo> DMA::GetModules(bool refresh)
 /// </summary>
 /// <param name="base">Base address to start from.</param>
 /// <param name="offsets">List of offsets to apply sequentially.</param>
-/// <returns>The final address, or 0 if the chain is broken.</returns>
-uint64_t DMA::ReadChain(uint64_t base,
+/// <returns>The final address and operation status.</returns>
+DMAResult<uint64_t> DMA::ReadChain(uint64_t base,
     const std::vector<uint64_t>& offsets) {
-    uint64_t result = 0;
-    return TryReadChain(base, offsets, result) ? result : 0;
-}
-
-bool DMA::TryReadChain(uint64_t base, const std::vector<uint64_t>& offsets,
-    uint64_t& result) {
-    result = 0;
-    if (base == 0)
-        return false;
+    DMAResult<uint64_t> result;
+    if (base == 0) {
+        result.operation = DMAOperationResult::Failure(
+            DMAStatus::InvalidArgument, "Pointer-chain base cannot be zero.");
+        return result;
+    }
 
     uint64_t currentAddress = base;
     for (const auto& offset : offsets) {
-        const auto read = ReadResult<uint64_t>(currentAddress);
-        if (!read || read.value == 0 ||
-            offset > std::numeric_limits<uint64_t>::max() - read.value) {
-            return false;
+        const auto read = Read<uint64_t>(currentAddress);
+        if (!read) {
+            result.operation = read.operation;
+            return result;
         }
-        currentAddress = read.value;
-        currentAddress += offset;
+        if (read.value == 0) {
+            result.operation = DMAOperationResult::Failure(
+                DMAStatus::NotFound, "Pointer chain contains a null pointer.");
+            result.operation.address = currentAddress;
+            result.operation.pid = targetPID;
+            return result;
+        }
+        if (offset > std::numeric_limits<uint64_t>::max() - read.value) {
+            result.operation = DMAOperationResult::Failure(
+                DMAStatus::InvalidArgument, "Pointer-chain address overflow.");
+            result.operation.address = currentAddress;
+            result.operation.pid = targetPID;
+            return result;
+        }
+        currentAddress = read.value + offset;
     }
-    result = currentAddress;
-    return true;
+    result.value = currentAddress;
+    result.operation = DMAOperationResult::Success(sizeof(uint64_t));
+    result.operation.address = currentAddress;
+    result.operation.pid = targetPID;
+    return result;
 }
 
 /// <summary>
@@ -560,7 +560,7 @@ std::string DMA::ReadString(uint64_t address, size_t maxLength) {
         return "";
     std::string result;
     result.resize(maxLength);
-    if (ReadRawResult(address, result.data(), maxLength)) {
+    if (ReadRaw(address, result.data(), maxLength)) {
         size_t nullTerminator = result.find('\0');
         if (nullTerminator != std::string::npos) {
             result.resize(nullTerminator);
@@ -583,7 +583,7 @@ std::wstring DMA::ReadWString(uint64_t address, size_t maxLength) {
         return L"";
     std::wstring result;
     result.resize(maxLength);
-    if (ReadRawResult(address, result.data(), maxLength * sizeof(wchar_t))) {
+    if (ReadRaw(address, result.data(), maxLength * sizeof(wchar_t))) {
         size_t nullTerminator = result.find(L'\0');
         if (nullTerminator != std::wstring::npos) {
             result.resize(nullTerminator);
@@ -609,7 +609,7 @@ uint64_t DMA::ResolveRelative(uint64_t instructionAddress,
         return 0;
     if (offsetOffset > std::numeric_limits<uint64_t>::max() - instructionAddress)
         return 0;
-    const auto relative = ReadResult<int32_t>(instructionAddress + offsetOffset);
+    const auto relative = Read<int32_t>(instructionAddress + offsetOffset);
     if (!relative)
         return 0;
     const int32_t relativeOffset = relative.value;
@@ -626,22 +626,40 @@ uint64_t DMA::ResolveRelative(uint64_t instructionAddress,
     return magnitude > nextInstruction ? 0 : nextInstruction - magnitude;
 }
 
-bool DMA::VirtualToPhysical(uint64_t virtualAddress,
-    uint64_t& physicalAddress) const
+DMAResult<uint64_t> DMA::VirtualToPhysical(uint64_t virtualAddress) const
 {
-    physicalAddress = 0;
-    return IsAttached() && virtualAddress != 0 &&
-        static_cast<bool>(backend->VirtualToPhysical(targetPID, virtualAddress,
-            physicalAddress));
+    DMAResult<uint64_t> result;
+    if (!IsAttached()) {
+        result.operation = DMAOperationResult::Failure(
+            DMAStatus::NotAttached, "DMA is not attached to a process.");
+        return result;
+    }
+    if (virtualAddress == 0) {
+        result.operation = DMAOperationResult::Failure(
+            DMAStatus::InvalidArgument, "Virtual address cannot be zero.");
+        return result;
+    }
+    result.operation = backend->VirtualToPhysical(targetPID, virtualAddress,
+        result.value);
+    result.operation.pid = targetPID;
+    result.operation.address = virtualAddress;
+    return result;
 }
 
-bool DMA::PrefetchPages(const std::vector<uint64_t>& addresses) const
+DMAOperationResult DMA::PrefetchPages(
+    const std::vector<uint64_t>& addresses) const
 {
-    if (!IsAttached() || addresses.empty() ||
+    if (!IsAttached())
+        return DMAOperationResult::Failure(DMAStatus::NotAttached,
+            "DMA is not attached to a process.");
+    if (addresses.empty() ||
         addresses.size() > std::numeric_limits<DWORD>::max()) {
-        return false;
+        return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
+            "Prefetch requires a non-empty address list within DWORD limits.");
     }
-    return static_cast<bool>(backend->PrefetchPages(targetPID, addresses));
+    auto result = backend->PrefetchPages(targetPID, addresses);
+    result.pid = targetPID;
+    return result;
 }
 
 /// <summary>

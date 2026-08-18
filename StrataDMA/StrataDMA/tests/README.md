@@ -26,3 +26,7 @@ New high-level behavior should generally receive a test in the closest suite.
 Extend `MockVmmBackend` only when the public behavior needs additional backend
 state or a failure-injection switch. Each test case receives a fresh backend,
 so cases must not depend on execution order.
+
+Public operations return `DMAOperationResult` or `DMAResult<T>`; failure tests
+assert directly on that result's status and message rather than shared error
+state.

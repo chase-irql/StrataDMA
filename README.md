@@ -69,8 +69,15 @@ options.memoryMapPath = "C:\\DMA\\mmap.txt";
 options.fallbackWithoutMemoryMap = true;
 options.initializePlugins = true; // required by VFS APIs; opt-in
 
-if (!dma.Initialize(options) || !dma.Attach("target.exe")) {
-    std::cerr << dma.GetLastError() << '\n';
+const auto initialized = dma.Initialize(options);
+if (!initialized) {
+    std::cerr << initialized.message << '\n';
+    return;
+}
+
+const auto attached = dma.Attach("target.exe");
+if (!attached) {
+    std::cerr << attached.message << '\n';
     return;
 }
 ```
@@ -90,7 +97,7 @@ The stable leading fields of either PEB layout can be parsed without depending
 on a private full Windows structure:
 
 ```cpp
-auto process = dma.GetProcessInfoResult(); // PID 0 means current attachment
+auto process = dma.GetProcessInfo(); // PID 0 means current attachment
 auto peb = dma.GetProcessEnvironmentBlock(); // prefers WoW64 PEB when present
 if (peb) {
     std::cout << std::hex << peb.value.imageBaseAddress << '\n';
@@ -130,7 +137,7 @@ auto exported = dma.ExportPhysicalMemoryMap("C:\\DMA\\mmap.txt");
 Memory operations return structured results that retain failure details:
 
 ```cpp
-auto health = dma.ReadResult<int>(player + 0x100);
+auto health = dma.Read<int>(player + 0x100);
 if (!health) {
     std::cerr << health.operation.message << " ("
               << health.operation.transferredBytes << "/"
@@ -144,6 +151,16 @@ auto value = system.Read<uint64_t>(kernelAddress);
 
 `DMAStatus` distinguishes invalid input, missing attachment, partial transfer,
 not-found, unsupported backend operations, I/O errors, and backend failures.
+Lifecycle, raw memory, address translation, prefetch, module-dump, and input
+initialization calls use the same result model. Check the returned object and
+read its `message`; there is no shared last-error state.
+
+```cpp
+std::array<std::byte, 64> bytes{};
+auto read = dma.ReadRaw(address, bytes.data(), bytes.size());
+auto physical = dma.VirtualToPhysical(address);
+auto chain = dma.ReadChain(root, { 0x10, 0x28 });
+```
 
 For a group of reads that should stay coherent during one update:
 
@@ -298,12 +315,13 @@ packet metadata, configurable signatures/offsets, reconnect discovery, button
 edges, and normalized dead-zone-aware axes:
 
 ```cpp
-dma.InitKeyboard(10);
+auto keyboard = dma.InitKeyboard(10);
 if (dma.IsKeyPressed(VK_SPACE)) { /* rising edge */ }
 
 DMAGamepadConfig gamepad;
 gamepad.pollIntervalMs = 4;
-if (dma.InitGamepad(gamepad)) {
+auto gamepadResult = dma.InitGamepad(gamepad);
+if (gamepadResult) {
     auto state = dma.GetNormalizedGamepadState();
     if (dma.IsGamepadButtonJustPressed(XINPUT_GAMEPAD_A)) { /* edge */ }
 }

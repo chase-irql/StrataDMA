@@ -30,6 +30,11 @@ uint64_t FindPattern(const std::vector<uint8_t>& buffer, uint64_t baseAddress,
         baseAddress, options);
     return matches && !matches.value.empty() ? matches.value.front().address : 0;
 }
+
+DMAOperationResult InputFailure(DMAStatus status, const char* message)
+{
+    return DMAOperationResult::Failure(status, message);
+}
 }
 
 
@@ -38,11 +43,12 @@ uint64_t FindPattern(const std::vector<uint8_t>& buffer, uint64_t baseAddress,
 /// Finds the gafAsyncKeyState export in win32kbase.sys/win32k.sys and starts a background thread to poll it.
 /// </summary>
 /// <param name="poll_ms">Interval in milliseconds to poll the keyboard state (default: 10ms).</param>
-/// <returns>True if initialization was successful, false otherwise.</returns>
-bool DMA::InitKeyboard(int poll_ms, bool debug) {
+/// <returns>The keyboard initialization result.</returns>
+DMAOperationResult DMA::InitKeyboard(int poll_ms, bool debug) {
     if (!IsInitialized()) {
         if (debug) printf("[InitKeyboard] FAIL: DMA is not initialized\n");
-        return false;
+        return InputFailure(DMAStatus::NotInitialized,
+            "DMA is not initialized.");
     }
 
     StopKeyboardThread();
@@ -58,7 +64,8 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
     const uint32_t Winver = GetWindowsBuild();
     if (Winver == 0) {
         if (debug) printf("[InitKeyboard] FAIL: Could not query the Windows build.\n");
-        return false;
+        return InputFailure(DMAStatus::BackendError,
+            "Could not query the Windows build.");
     }
 
     if (debug) printf("[InitKeyboard] Winver=%d (threshold 22000, path=%s)\n",
@@ -66,7 +73,8 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
 
     if (!backend->FindPid("winlogon.exe", win_logon_pid)) {
         if (debug) printf("[InitKeyboard] FAIL: Could not find winlogon.exe pid\n");
-        return false;
+        return InputFailure(DMAStatus::NotFound,
+            "Could not find winlogon.exe.");
     }
     if (debug) printf("[InitKeyboard] winlogon.exe pid=%u\n", win_logon_pid);
 
@@ -77,7 +85,8 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
         std::vector<DMAProcessInfo> processes;
         if (!backend->GetProcesses(processes)) {
             if (debug) printf("[InitKeyboard] FAIL: process enumeration failed\n");
-            return false;
+            return InputFailure(DMAStatus::BackendError,
+                "Process enumeration failed.");
         }
         if (debug) printf("[InitKeyboard] Total process count: %zu\n", processes.size());
 
@@ -227,7 +236,7 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
                     released_bitmap.fill(0);
                 }
                 StartKeyboardThread(poll_ms);
-                return true;
+                return DMAOperationResult::Success();
             }
             else {
                 if (debug) printf("[InitKeyboard] [pid=%u] FAIL: gafAsyncKeyStateExport=0x%llx failed kernel address check\n",
@@ -236,7 +245,8 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
         }
 
         if (debug) printf("[InitKeyboard] FAIL: Exhausted all csrss candidates without success\n");
-        return false;
+        return InputFailure(DMAStatus::NotFound,
+            "No usable csrss session exposed gafAsyncKeyState.");
 
     }
     // ---------------------------------------------------------------
@@ -306,7 +316,9 @@ bool DMA::InitKeyboard(int poll_ms, bool debug) {
             StartKeyboardThread(poll_ms);
         }
 
-        return valid;
+        return valid ? DMAOperationResult::Success()
+            : InputFailure(DMAStatus::NotFound,
+                "Could not locate gafAsyncKeyState.");
     }
 }
 
@@ -323,16 +335,14 @@ void DMA::StopKeyboard()
 /// Initializes the Xbox Gamepad reader by locating xboxgip.sys, scanning for the
 /// static context array, and finding the active controller slot.
 /// </summary>
-bool DMA::InitGamepad(int poll_ms, bool debug) {
-    DMAGamepadConfig config;
-    config.pollIntervalMs = poll_ms;
-    config.debug = debug;
-    return InitGamepad(config);
-}
-
-bool DMA::InitGamepad(const DMAGamepadConfig& config) {
+DMAOperationResult DMA::InitGamepad(const DMAGamepadConfig& config) {
     if (!IsInitialized() || config.slotCount == 0 || config.slotStride == 0 ||
-        config.stateSize < 15) return false;
+        config.stateSize < 15) {
+        return InputFailure(!IsInitialized() ? DMAStatus::NotInitialized
+            : DMAStatus::InvalidArgument,
+            !IsInitialized() ? "DMA is not initialized."
+            : "Gamepad configuration is invalid.");
+    }
 
     gamepadConfig = config;
     const bool debug = config.debug;
@@ -351,14 +361,17 @@ bool DMA::InitGamepad(const DMAGamepadConfig& config) {
     DMAModuleInfo module;
     if (!backend->GetModule(sysPid, config.moduleName, module)) {
         if (debug) printf("[InitGamepad] FAIL: Could not find xboxgip.sys\n");
-        return false;
+        return InputFailure(DMAStatus::NotFound,
+            "Could not find the configured gamepad module.");
     }
 
     const uint64_t base = module.baseAddress;
     const uint32_t size = module.imageSize;
 
     std::vector<uint8_t> moduleDump = DumpMemoryEx(sysPid, base, size);
-    if (moduleDump.empty()) return false;
+    if (moduleDump.empty())
+        return InputFailure(DMAStatus::BackendError,
+            "Could not read the gamepad module.");
 
     // Signature #2: 48 8D 05 ? ? ? ? 33 D2
     uint64_t hitAddress = FindPattern(moduleDump, base,
@@ -366,7 +379,8 @@ bool DMA::InitGamepad(const DMAGamepadConfig& config) {
 
     if (!hitAddress) {
         if (debug) printf("[InitGamepad] FAIL: Signature not found.\n");
-        return false;
+        return InputFailure(DMAStatus::NotFound,
+            "The gamepad slot-array signature was not found.");
     }
 
     // Resolve RIP-relative offset from local buffer
@@ -394,12 +408,13 @@ bool DMA::InitGamepad(const DMAGamepadConfig& config) {
             // Start the background thread
             gamepad_running = true;
             gamepad_thread = std::thread(&DMA::GamepadThread, this, poll_ms);
-            return true;
+            return DMAOperationResult::Success();
         }
     }
 
     if (debug) printf("[InitGamepad] FAIL: No active controllers found.\n");
-    return false;
+    return InputFailure(DMAStatus::NotFound,
+        "No active gamepad controller was found.");
 }
 
 void DMA::StopGamepad()

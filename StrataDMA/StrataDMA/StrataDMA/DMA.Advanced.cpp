@@ -31,13 +31,13 @@ bool RegionMatches(const DMAMemoryRegion& region,
 }
 }
 
-DMAOperationResult DMA::ReadRawResult(uint64_t address, void* buffer,
+DMAOperationResult DMA::ReadRaw(uint64_t address, void* buffer,
     size_t size, ULONG64 flags)
 {
-    return ReadRawResultEx(targetPID, address, buffer, size, flags);
+    return ReadRaw(targetPID, address, buffer, size, flags);
 }
 
-DMAOperationResult DMA::ReadRawResultEx(DWORD pid, uint64_t address,
+DMAOperationResult DMA::ReadRaw(DWORD pid, uint64_t address,
     void* buffer, size_t size, ULONG64 flags)
 {
     if (!IsInitialized())
@@ -59,18 +59,16 @@ DMAOperationResult DMA::ReadRawResultEx(DWORD pid, uint64_t address,
         result.status = DMAStatus::PartialTransfer;
         result.message = "Memory read returned partial data.";
     }
-    if (!result)
-        SetLastError(result.message);
     return result;
 }
 
-DMAOperationResult DMA::WriteRawResult(uint64_t address, const void* buffer,
+DMAOperationResult DMA::WriteRaw(uint64_t address, const void* buffer,
     size_t size)
 {
-    return WriteRawResultEx(targetPID, address, buffer, size);
+    return WriteRaw(targetPID, address, buffer, size);
 }
 
-DMAOperationResult DMA::WriteRawResultEx(DWORD pid, uint64_t address,
+DMAOperationResult DMA::WriteRaw(DWORD pid, uint64_t address,
     const void* buffer, size_t size)
 {
     if (!IsInitialized())
@@ -87,8 +85,6 @@ DMAOperationResult DMA::WriteRawResultEx(DWORD pid, uint64_t address,
     result.requestedBytes = size;
     if (result)
         result.transferredBytes = size;
-    if (!result)
-        SetLastError(result.message);
     return result;
 }
 
@@ -329,8 +325,10 @@ void DMA::ProcessMonitorThread()
         if (!alive && processMonitorAutoReattach) {
             DWORD found = 0;
             if (backend->FindPid(monitoredProcessName, found) && found != 0) {
-                if (Attach(found, monitoredMainModuleName.empty()
-                    ? monitoredProcessName : monitoredMainModuleName)) {
+                const auto attached = Attach(found,
+                    monitoredMainModuleName.empty() ? monitoredProcessName
+                    : monitoredMainModuleName);
+                if (attached) {
                     hadProcess = true;
                     reportedAttachError = false;
                     if (processMonitorCallback) {
@@ -344,7 +342,8 @@ void DMA::ProcessMonitorThread()
                 else if (!reportedAttachError && processMonitorCallback) {
                     reportedAttachError = true;
                     try { processMonitorCallback({ DMAProcessEventKind::Error,
-                        previous, found, monitoredProcessName, GetLastError() }); }
+                        previous, found, monitoredProcessName,
+                        attached.message }); }
                     catch (...) {}
                 }
             }

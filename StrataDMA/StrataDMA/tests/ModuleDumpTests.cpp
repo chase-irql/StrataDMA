@@ -91,16 +91,18 @@ STRATA_TEST_CASE(module_dump_rejects_invalid_or_truncated_headers)
     const auto path = TemporaryFile("strata_dma_invalid_dump_test.bin");
 
     fixture.backend->Store<uint16_t>(MockVmmBackend::MemoryBase, 0);
-    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", path.string()));
-    STRATA_REQUIRE(fixture.dma.GetLastError().find("DOS header") !=
+    auto dumped = fixture.dma.DumpModule("test.exe", path.string());
+    STRATA_REQUIRE(!dumped);
+    STRATA_REQUIRE(dumped.message.find("DOS header") !=
         std::string::npos);
 
     IMAGE_DOS_HEADER dos{};
     dos.e_magic = IMAGE_DOS_SIGNATURE;
     dos.e_lfanew = 0x7ff0;
     fixture.backend->Store(MockVmmBackend::MemoryBase, dos);
-    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", path.string()));
-    STRATA_REQUIRE(fixture.dma.GetLastError().find("PE header") !=
+    dumped = fixture.dma.DumpModule("test.exe", path.string());
+    STRATA_REQUIRE(!dumped);
+    STRATA_REQUIRE(dumped.message.find("PE header") !=
         std::string::npos);
 }
 
@@ -138,6 +140,7 @@ STRATA_TEST_CASE(module_dump_reports_missing_module_and_output_failures)
     StoreValidPe64(*fixture.backend);
     const auto impossible = TemporaryFile("strata_dma_missing_directory") /
         "dump.bin";
-    STRATA_REQUIRE(!fixture.dma.DumpModule("test.exe", impossible.string()));
-    STRATA_REQUIRE(fixture.dma.GetLastError().find("open") != std::string::npos);
+    const auto dumped = fixture.dma.DumpModule("test.exe", impossible.string());
+    STRATA_REQUIRE(!dumped);
+    STRATA_REQUIRE(dumped.message.find("open") != std::string::npos);
 }
