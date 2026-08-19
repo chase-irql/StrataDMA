@@ -579,18 +579,19 @@ std::string DMA::ReadString(uint64_t address, size_t maxLength) {
 /// terminator.</returns>
 std::wstring DMA::ReadWString(uint64_t address, size_t maxLength) {
     if (address == 0 || maxLength == 0 ||
-        maxLength > std::numeric_limits<size_t>::max() / sizeof(wchar_t))
+        maxLength > std::numeric_limits<size_t>::max() / sizeof(char16_t))
+        return L"";
+    std::vector<char16_t> encoded(maxLength);
+    if (!ReadRaw(address, encoded.data(), encoded.size() * sizeof(char16_t)))
         return L"";
     std::wstring result;
-    result.resize(maxLength);
-    if (ReadRaw(address, result.data(), maxLength * sizeof(wchar_t))) {
-        size_t nullTerminator = result.find(L'\0');
-        if (nullTerminator != std::wstring::npos) {
-            result.resize(nullTerminator);
-        }
-        return result;
+    result.reserve(maxLength);
+    for (char16_t value : encoded) {
+        if (value == u'\0')
+            break;
+        result.push_back(static_cast<wchar_t>(value));
     }
-    return L"";
+    return result;
 }
 
 /// <summary>
