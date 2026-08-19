@@ -10,6 +10,8 @@ endif()
 
 option(STRATA_DMA_BUILD_EXAMPLE "Build the existing example executable" ON)
 option(STRATA_DMA_BUILD_TESTS "Build hardware-independent mock tests" ON)
+option(STRATA_DMA_LINK_RUNTIME
+    "Link Linux consumers directly to the MemProcFS shared libraries" ON)
 set(STRATA_DMA_RUNTIME_DIR "" CACHE PATH
     "Directory containing the MemProcFS runtime libraries")
 if(NOT STRATA_DMA_RUNTIME_DIR AND DEFINED ENV{STRATA_DMA_RUNTIME_DIR})
@@ -45,7 +47,7 @@ if(WIN32)
     target_link_libraries(strata_dma PUBLIC
         "${STRATA_DMA_SOURCE_DIR}/libs/vmm.lib"
         "${STRATA_DMA_SOURCE_DIR}/libs/leechcore.lib")
-else()
+elseif(STRATA_DMA_LINK_RUNTIME)
     if(NOT STRATA_DMA_RUNTIME_DIR)
         message(FATAL_ERROR
             "A Linux build requires STRATA_DMA_RUNTIME_DIR to point to a "
@@ -61,6 +63,13 @@ else()
     target_link_libraries(strata_dma PUBLIC "-l:vmm.so" "-l:leechcore.so")
     set_target_properties(strata_dma PROPERTIES
         BUILD_RPATH "${STRATA_DMA_RUNTIME_DIR}")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+        AND STRATA_DMA_BUILD_EXAMPLE
+        AND NOT STRATA_DMA_LINK_RUNTIME)
+    message(FATAL_ERROR
+        "STRATA_DMA_BUILD_EXAMPLE requires STRATA_DMA_LINK_RUNTIME=ON.")
 endif()
 
 if(MSVC)

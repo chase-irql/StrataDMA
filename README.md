@@ -55,7 +55,10 @@ ctest --test-dir build -C Release --output-on-failure
 cmake --install build --config Release --prefix package
 ```
 
-Options are `STRATA_DMA_BUILD_EXAMPLE` and `STRATA_DMA_BUILD_TESTS`.
+Options are `STRATA_DMA_BUILD_EXAMPLE`, `STRATA_DMA_BUILD_TESTS`, and
+`STRATA_DMA_LINK_RUNTIME`. The last option is Linux-only in effect and defaults
+to `ON`. Dynamic hosts that preload `leechcore.so` and `vmm.so` themselves may
+turn it off; the final module must then allow and resolve the VMMDLL symbols.
 
 At runtime, place `vmm.dll` and `leechcore.dll` beside the consuming executable.
 Place `info.db` there as well when InfoDB/symbol functionality is used. The
