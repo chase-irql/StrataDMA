@@ -32,6 +32,8 @@ STRATA_TEST_CASE(initialization_forwards_options_and_plugins)
 
     STRATA_REQUIRE(fixture.dma.Initialize(options));
     STRATA_REQUIRE(fixture.backend->pluginsInitialized);
+    STRATA_REQUIRE(!fixture.backend->initializeArguments.empty());
+    STRATA_REQUIRE(fixture.backend->initializeArguments.front().empty());
     STRATA_REQUIRE(HasArgument(fixture.backend->initializeArguments,
         "mock://device"));
     STRATA_REQUIRE(HasArgument(fixture.backend->initializeArguments, "-memmap"));

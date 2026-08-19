@@ -213,7 +213,7 @@ DMAOperationResult DMA::Initialize(const DMAInitializationOptions& options)
 
     auto attemptInitialize = [&](bool includeMemoryMap) {
         std::vector<std::string> arguments = {
-            "StrataDMA", "-device", options.device
+            "", "-device", options.device
         };
         if (options.debug) {
             arguments.push_back("-v");
