@@ -32,6 +32,8 @@ STRATA_TEST_CASE(initialization_forwards_options_and_plugins)
 
     STRATA_REQUIRE(fixture.dma.Initialize(options));
     STRATA_REQUIRE(fixture.backend->pluginsInitialized);
+    STRATA_REQUIRE(!fixture.backend->initializeArguments.empty());
+    STRATA_REQUIRE(fixture.backend->initializeArguments.front().empty());
     STRATA_REQUIRE(HasArgument(fixture.backend->initializeArguments,
         "mock://device"));
     STRATA_REQUIRE(HasArgument(fixture.backend->initializeArguments, "-memmap"));
@@ -170,7 +172,7 @@ STRATA_TEST_CASE(strings_pointer_chains_and_relative_addresses_work)
     fixture.Attach();
     const char text[] = "hello";
     fixture.backend->StoreBytes(0x3000, text, sizeof(text));
-    const wchar_t wide[] = L"wide";
+    const char16_t wide[] = u"wide";
     fixture.backend->StoreBytes(0x3100, wide, sizeof(wide));
     STRATA_REQUIRE(fixture.dma.ReadString(0x3000, 32) == "hello");
     STRATA_REQUIRE(fixture.dma.ReadWString(0x3100, 32) == L"wide");

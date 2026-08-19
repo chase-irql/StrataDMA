@@ -26,6 +26,12 @@ std::string CopyString(const char* value)
     return value ? value : "";
 }
 
+size_t BoundedStringLength(const char* value, size_t capacity)
+{
+    return static_cast<size_t>(
+        std::find(value, value + capacity, '\0') - value);
+}
+
 DMAProcessInfo CopyProcessInfo(const VMMDLL_PROCESS_INFORMATION& native)
 {
     DMAProcessInfo process;
@@ -192,8 +198,11 @@ DMAOperationResult VmmdllBackend::ConfigGet(ULONG64 option, uint64_t& value) con
     value = 0;
     if (!handle_)
         return NotInitialized();
-    return VMMDLL_ConfigGet(handle_, option, &value)
-        ? DMAOperationResult::Success() : BackendFailure("VMMDLL_ConfigGet");
+    ULONG64 nativeValue = 0;
+    if (!VMMDLL_ConfigGet(handle_, option, &nativeValue))
+        return BackendFailure("VMMDLL_ConfigGet");
+    value = static_cast<uint64_t>(nativeValue);
+    return DMAOperationResult::Success();
 }
 
 DMAOperationResult VmmdllBackend::ConfigSet(ULONG64 option, uint64_t value)
@@ -258,9 +267,9 @@ DMAOperationResult VmmdllBackend::PrefetchPages(DWORD pid,
     if (addresses.empty() || addresses.size() > std::numeric_limits<DWORD>::max())
         return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
             "Prefetch requires one or more addresses.");
-    return VMMDLL_MemPrefetchPages(handle_, pid,
-        const_cast<PULONG64>(addresses.data()),
-        static_cast<DWORD>(addresses.size()))
+    std::vector<ULONG64> nativeAddresses(addresses.begin(), addresses.end());
+    return VMMDLL_MemPrefetchPages(handle_, pid, nativeAddresses.data(),
+        static_cast<DWORD>(nativeAddresses.size()))
         ? DMAOperationResult::Success() : BackendFailure("VMMDLL_MemPrefetchPages");
 }
 
@@ -270,8 +279,11 @@ DMAOperationResult VmmdllBackend::VirtualToPhysical(DWORD pid,
     physicalAddress = 0;
     if (!handle_)
         return NotInitialized();
-    return VMMDLL_MemVirt2Phys(handle_, pid, virtualAddress, &physicalAddress)
-        ? DMAOperationResult::Success() : BackendFailure("VMMDLL_MemVirt2Phys");
+    ULONG64 nativeAddress = 0;
+    if (!VMMDLL_MemVirt2Phys(handle_, pid, virtualAddress, &nativeAddress))
+        return BackendFailure("VMMDLL_MemVirt2Phys");
+    physicalAddress = static_cast<uint64_t>(nativeAddress);
+    return DMAOperationResult::Success();
 }
 
 std::unique_ptr<IVmmScatterSession> VmmdllBackend::CreateScatter(
@@ -574,10 +586,14 @@ DMAOperationResult VmmdllBackend::ResolveSymbol(const std::string& symbolModule,
     address = 0;
     if (!handle_)
         return NotInitialized();
-    return VMMDLL_PdbSymbolAddress(handle_, symbolModule.c_str(), symbol.c_str(),
-        &address) ? DMAOperationResult::Success()
-        : DMAOperationResult::Failure(DMAStatus::NotFound,
+    ULONG64 nativeAddress = 0;
+    if (!VMMDLL_PdbSymbolAddress(handle_, symbolModule.c_str(), symbol.c_str(),
+        &nativeAddress)) {
+        return DMAOperationResult::Failure(DMAStatus::NotFound,
             "The PDB symbol was not found.");
+    }
+    address = static_cast<uint64_t>(nativeAddress);
+    return DMAOperationResult::Success();
 }
 
 DMAOperationResult VmmdllBackend::LookupSymbol(const std::string& symbolModule,
@@ -680,8 +696,12 @@ DMAOperationResult VmmdllBackend::EnumerateRegistryKeys(const std::string& path,
             break;
         DMARegistryKeyInfo key;
         key.name = name.data();
+#ifdef _WIN32
         key.lastWriteTime = (static_cast<uint64_t>(time.dwHighDateTime) << 32) |
             time.dwLowDateTime;
+#else
+        key.lastWriteTime = static_cast<uint64_t>(time);
+#endif
         keys.push_back(std::move(key));
     }
     return DMAOperationResult::Success();
@@ -809,7 +829,7 @@ DMAOperationResult VmmdllBackend::ListVfs(const std::string& path,
         const char* name = blob->uszMultiText + native.ouszName;
         const size_t remaining = blob->cbMultiText -
             static_cast<size_t>(native.ouszName);
-        entry.name.assign(name, strnlen_s(name, remaining));
+        entry.name.assign(name, BoundedStringLength(name, remaining));
         entry.directory = native.cbFileSize == std::numeric_limits<uint64_t>::max();
         entry.size = entry.directory ? 0 : native.cbFileSize;
         if (native.ExInfo.dwVersion == VMMDLL_VFS_FILELIST_EXINFO_VERSION) {

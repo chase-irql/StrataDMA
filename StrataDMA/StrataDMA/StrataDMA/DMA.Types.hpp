@@ -12,6 +12,7 @@
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
+#include "DMA.Platform.hpp"
 
 #include <chrono>
 #include <cstddef>

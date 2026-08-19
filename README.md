@@ -1,11 +1,12 @@
 # StrataDMA
 
-[![Windows tests](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml/badge.svg)](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml)
+[![Windows and Linux tests](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml/badge.svg)](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-A C++17 wrapper around MemProcFS/VMMDLL for authorized DMA-backed Windows
-memory inspection. The repository vendors the MemProcFS 5.16.5 and LeechCore
-headers and x64 import libraries.
+A cross-platform C++17 wrapper around MemProcFS/VMMDLL for authorized
+DMA-backed Windows memory inspection. Windows and 64-bit Linux hosts are
+supported; the inspected target remains Windows. The repository vendors the
+MemProcFS 5.16.5 and LeechCore headers plus Windows x64 import libraries.
 
 Use it only on systems and processes you are authorized to inspect.
 
@@ -54,11 +55,33 @@ ctest --test-dir build -C Release --output-on-failure
 cmake --install build --config Release --prefix package
 ```
 
-Options are `STRATA_DMA_BUILD_EXAMPLE` and `STRATA_DMA_BUILD_TESTS`.
+Options are `STRATA_DMA_BUILD_EXAMPLE`, `STRATA_DMA_BUILD_TESTS`, and
+`STRATA_DMA_LINK_RUNTIME`. The last option is Linux-only in effect and defaults
+to `ON`. Dynamic hosts that preload `leechcore.so` and `vmm.so` themselves may
+turn it off; the final module must then allow and resolve the VMMDLL symbols.
 
 At runtime, place `vmm.dll` and `leechcore.dll` beside the consuming executable.
 Place `info.db` there as well when InfoDB/symbol functionality is used. The
 repository contains import libraries, not the two runtime DLLs.
+
+On Fedora, install the compiler and MemProcFS's USB dependency, unpack the
+matching official MemProcFS Linux release, and point CMake at that directory:
+
+```bash
+sudo dnf install cmake gcc-c++ libusb1 ninja-build
+export STRATA_DMA_RUNTIME_DIR=/opt/memprocfs
+cmake -S . -B build -G Ninja \
+  -DSTRATA_DMA_BUILD_EXAMPLE=ON \
+  -DSTRATA_DMA_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+The Linux runtime directory must contain `vmm.so` and `leechcore.so`; keep
+`info.db` and any device or symbol plugins from the same MemProcFS release in
+that directory. CMake links against the two shared libraries without copying
+them into the install tree. At runtime, put the directory in the loader search
+path or launch with `LD_LIBRARY_PATH="$STRATA_DMA_RUNTIME_DIR"`.
 
 ## Initialization and attachment
 
@@ -349,7 +372,8 @@ PE-dump reconstruction, CR3 recovery and rollback, native/WoW64 PEB parsing,
 physical-map export, RWX cave scanning, registry, VFS, and unsupported backend
 operations. Failure injection exercises prepare/execute, read/write, plugin,
 timeout, malformed-data, and I/O paths. MSVC warnings are errors for the mock
-test core, and GitHub Actions runs Debug and Release builds.
+test core. GitHub Actions runs Windows Debug/Release builds and a Fedora GCC
+build.
 
 ```powershell
 cmake -S . -B build -A x64 `
@@ -362,6 +386,12 @@ ctest --test-dir build -C Debug --output-on-failure
 ctest --test-dir build -C Debug -L scatter --output-on-failure
 ```
 
+The equivalent Linux label command omits the multi-config argument:
+
+```bash
+ctest --test-dir build -L scatter --output-on-failure
+```
+
 All native VMMDLL function calls are contained in `DMA.Backend.cpp`.
 Implement `IVmmBackend` and pass a `shared_ptr` to `DMA` to add deterministic
 fixtures without hardware. Optional methods return `DMAStatus::Unsupported`
@@ -370,11 +400,19 @@ unless the mock overrides them.
 ## Second-PC hardware smoke test
 
 The example includes a finite, target-memory-read-only hardware check. Copy the
-compiled example, matching `vmm.dll`, `leechcore.dll`, `info.db`, and the symbol
-support DLLs from the same MemProcFS release to the acquisition PC, then run:
+compiled example, matching VMMDLL/LeechCore runtime files, `info.db`, and symbol
+support files from the same MemProcFS release to the acquisition PC, then run
+on Windows:
 
 ```powershell
 .\strata_dma_example.exe --hardware-test explorer.exe
+```
+
+On Linux, use the matching `.so` runtime and run:
+
+```bash
+LD_LIBRARY_PATH="$STRATA_DMA_RUNTIME_DIR" \
+  ./strata_dma_example --hardware-test explorer.exe
 ```
 
 It validates initialization/version discovery, the physical map, normal attach
