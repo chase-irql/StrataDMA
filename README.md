@@ -433,7 +433,7 @@ then input support. Test writes and DTB changes last.
 StrataDMA is free and open-source software licensed under the
 [GNU Affero General Public License version 3](LICENSE). The vendored MemProcFS
 and LeechCore components retain their upstream AGPLv3 and GPLv3 licenses; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for versions, file scope, and
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for versions, file scope, and
 source links.
 
 ## Source layout
