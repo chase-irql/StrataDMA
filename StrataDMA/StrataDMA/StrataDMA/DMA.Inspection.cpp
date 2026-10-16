@@ -86,7 +86,7 @@ DMAOperationResult VmmdllBackend::Inspect(const DMAInspectionQuery& q, DMAInspec
     if (q.kind == "network") return CopyInspectionMap<VMMDLL_MAP_NET>(rows, VMMDLL_MAP_NET_VERSION,
         [&](auto p) { return VMMDLL_Map_GetNetU(handle_, p); }, [](const auto& map, auto& out) {
             for (DWORD i = 0; i < map.cMap; ++i) { const auto& e = map.pMap[i];
-                out.Add({N(e.dwPID),N(e.dwState),N(e.AF),S(e.Src.uszText),N(e.Src.port),S(e.Dst.uszText),N(e.Dst.port),B(e.Src.fValid != FALSE),B(e.Dst.fValid != FALSE),A(e.vaObj),A(e.ftTime),S(e.uszText)});
+                out.Add({N(e.dwPID),N(e.dwState),N(e.AF),S(e.Src.uszText),N(e.Src.port),S(e.Dst.uszText),N(e.Dst.port),B(e.Src.fValid != FALSE),B(e.Dst.fValid != FALSE),A(e.vaObj),A(e.ftTime),S(e.uszText),e.dwPoolTag == 0x55647041 ? "UDP" : "TCP"});
             }
         });
     if (q.kind == "services") return CopyInspectionMap<VMMDLL_MAP_SERVICE>(rows, VMMDLL_MAP_SERVICE_VERSION,

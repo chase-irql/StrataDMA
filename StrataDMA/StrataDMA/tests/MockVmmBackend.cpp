@@ -118,7 +118,9 @@ MockVmmBackend::MockVmmBackend()
         for (size_t i = 0; i < 2; ++i) {
             std::vector<std::string> row;
             for (const auto& column : table.columns) {
-                if (column.type == "address") row.push_back(i == 0 ? "0xfffff80712345000" : "0xfffff80712346000");
+                if (kind == "network" && column.name == "protocol") row.push_back(i == 0 ? "TCP" : "UDP");
+                else if (kind == "network" && column.name == "state") row.push_back(i == 0 ? "1" : "0");
+                else if (column.type == "address") row.push_back(i == 0 ? "0xfffff80712345000" : "0xfffff80712346000");
                 else if (column.type == "filetime") row.push_back("0x01da000000000000");
                 else if (column.type == "boolean") row.push_back(i == 0 ? "true" : "false");
                 else if (column.type == "number") row.push_back(column.name == "pid" ? "42" : std::to_string(i + 1));
@@ -221,6 +223,8 @@ MockVmmBackend::MockVmmBackend()
         "2026-10-15 12:00:01 UTC REG MOD 0 0 0000000000000000 HKLM\\Software\\Test\n"
         "2026-10-15 12:00:00 UTC PROC DEL 42 7 fffffffffffffff0 test.exe stopped\n";
     vfsFiles["\\forensic\\timeline\\timeline_all.txt"] = std::vector<uint8_t>(timeline.begin(), timeline.end());
+    vfsFiles["\\forensic\\forensic_enable.txt"] = { '2' };
+    vfsFiles["\\forensic\\progress_percent.txt"] = { '1', '0', '0' };
     vfsFiles["\\misc\\procinfo\\progress_percent.txt"] = { '1', '0', '0' };
     const std::string dtb = "0000 0 0000000000abc000 0 test.exe\n";
     vfsFiles["\\misc\\procinfo\\dtb.txt"] =

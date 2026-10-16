@@ -9,7 +9,7 @@ std::vector<DMAInspectionColumn> DMAInspectionColumns(const std::string& kind)
         {"heaps", {{"address","address"},{"heap_id","number"},{"index","number"},{"type","number"},{"is_32_bit","boolean"},{"segment_count","number"},{"segment_bytes","number"}}},
         {"heap-segments", {{"address","address"},{"size","number"},{"heap_index","number"},{"type","number"}}},
         {"heap-allocations", {{"address","address"},{"size","number"},{"type","number"}}},
-        {"network", {{"pid","number"},{"state","number"},{"family","number"},{"local_address","text"},{"local_port","number"},{"remote_address","text"},{"remote_port","number"},{"local_valid","boolean"},{"remote_valid","boolean"},{"object","address"},{"created","filetime"},{"description","text"}}},
+        {"network", {{"pid","number"},{"state","number"},{"family","number"},{"local_address","text"},{"local_port","number"},{"remote_address","text"},{"remote_port","number"},{"local_valid","boolean"},{"remote_valid","boolean"},{"object","address"},{"created","filetime"},{"description","text"},{"protocol","text"}}},
         {"services", {{"name","text"},{"display_name","text"},{"pid","number"},{"state","number"},{"start_type","number"},{"service_type","number"},{"path","text"},{"image_path","text"},{"account","text"},{"account_type","text"},{"object","address"},{"exit_code","number"}}},
         {"drivers", {{"name","text"},{"path","text"},{"service_key","text"},{"object","address"},{"base","address"},{"size","number"},{"device_object","address"}}},
         {"driver-dispatch", {{"driver","text"},{"driver_object","address"},{"major_index","number"},{"address","address"}}},
