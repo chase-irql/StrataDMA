@@ -2,6 +2,11 @@
 
 ## OS inspection tables
 
+`DMAInspectionTable::sourceTotal` counts recovered rows in the requested scope before
+text filtering, independently of pagination; `total` counts matching rows. A successful
+empty source map is distinct from a filter excluding recovered rows. Neither establishes
+that an object or activity never existed. Failed map reads remain operation errors.
+
 `DMA::Inspect(DMAInspectionQuery)` exposes threads, call stacks, handles, heaps,
 heap segments/allocations, network endpoints, services, driver objects and dispatch
 functions, devices, kernel objects, pool allocations, and unloaded modules.

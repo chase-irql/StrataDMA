@@ -236,6 +236,10 @@ STRATA_TEST_CASE(inspection_maps_preserve_exact_cells_filter_page_and_attachment
         if (kind == "callstack") query.selector = 1;
         const auto result = fixture.dma.Inspect(query);
         STRATA_REQUIRE(result && result.value.total == 2 && result.value.rows.size() == 1);
+        STRATA_REQUIRE(result.value.sourceTotal == 2);
+        auto noMatch = query; noMatch.filter = "no-such-recovered-row";
+        const auto filtered = fixture.dma.Inspect(noMatch);
+        STRATA_REQUIRE(filtered && filtered.value.total == 0 && filtered.value.sourceTotal == 2 && filtered.value.rows.empty());
         STRATA_REQUIRE(result.value.rows[0].size() == result.value.columns.size());
         for (size_t i = 0; i < result.value.columns.size(); ++i)
             if (result.value.columns[i].type == "address") STRATA_REQUIRE(result.value.rows[0][i] == "0xfffff80712346000");

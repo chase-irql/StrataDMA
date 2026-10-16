@@ -87,6 +87,7 @@ struct DMAInspectionTable {
     std::vector<DMAInspectionColumn> columns;
     std::vector<std::vector<std::string>> rows;
     size_t total = 0;
+    size_t sourceTotal = 0; // Rows in the requested scope before text filtering, independent of pagination.
 };
 inline const std::vector<std::string> DMAInspectionKinds = {
     "threads", "callstack", "handles", "heaps", "heap-segments", "heap-allocations",

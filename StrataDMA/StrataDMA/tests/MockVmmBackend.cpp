@@ -18,6 +18,7 @@ DMAOperationResult MockVmmBackend::Inspect(const DMAInspectionQuery& query, DMAI
     std::string filter = query.filter;
     std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     for (const auto& row : found->second.rows) {
+        ++table.sourceTotal;
         bool match = filter.empty();
         for (auto cell : row) {
             std::transform(cell.begin(), cell.end(), cell.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

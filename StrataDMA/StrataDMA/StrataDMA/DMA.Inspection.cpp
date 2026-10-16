@@ -27,6 +27,7 @@ public:
     }
     void Add(std::initializer_list<std::string> cells) {
         if (cells.size() != table.columns.size()) throw std::logic_error("Inspection column mismatch.");
+        ++table.sourceTotal;
         if (!filter.empty() && std::none_of(cells.begin(), cells.end(), [&](const auto& s) { return Lower(s).find(filter) != std::string::npos; })) return;
         const size_t index = table.total++;
         if (index >= query.offset && table.rows.size() < query.limit) table.rows.emplace_back(cells);
