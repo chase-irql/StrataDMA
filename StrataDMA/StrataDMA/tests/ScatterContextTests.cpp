@@ -163,6 +163,24 @@ STRATA_TEST_CASE(pointer_trace_preserves_hops_width_and_failure)
     STRATA_REQUIRE(!context.TraceChain(0x4000, { 0 }, 5));
 }
 
+STRATA_TEST_CASE(physical_zero_address_reaches_backend_but_virtual_null_is_rejected)
+{
+    MockDmaFixture fixture; fixture.Attach();
+    const auto physical = fixture.dma.ProcessContext(UINT32_MAX);
+    const auto read = physical.Read<uint32_t>(0);
+    STRATA_REQUIRE_STATUS(read.operation, DMAStatus::BackendError);
+    STRATA_REQUIRE(fixture.backend->lastReadPid == UINT32_MAX);
+    const auto calls = fixture.backend->readCalls.load();
+    STRATA_REQUIRE(!fixture.dma.ProcessContext(42).Read<uint32_t>(0));
+    STRATA_REQUIRE(fixture.backend->readCalls.load() == calls);
+    uint32_t value = 0;
+    STRATA_REQUIRE_STATUS(fixture.dma.ReadRaw(UINT32_MAX, 0, &value, sizeof(value)), DMAStatus::BackendError);
+    auto batch = physical.CreateScatter(); STRATA_REQUIRE(batch.AddRead(0, value));
+    STRATA_REQUIRE_STATUS(batch.Execute().operation, DMAStatus::BackendError);
+    auto frame = fixture.dma.CreateFrameContext(UINT32_MAX);
+    STRATA_REQUIRE_STATUS(frame.Gather({ {0, sizeof(value)} }).operation, DMAStatus::BackendError);
+}
+
 STRATA_TEST_CASE(frame_gather_rejects_invalid_ranges_and_read_failures)
 {
     MockDmaFixture fixture;

@@ -82,7 +82,7 @@ DMAOperationResult DMA::ReadRaw(DWORD pid, uint64_t address,
     if (!IsInitialized())
         return DMAOperationResult::Failure(DMAStatus::NotInitialized,
             "DMA is not initialized.");
-    if (pid == 0 || address == 0 || !buffer || size == 0 ||
+    if (pid == 0 || (address == 0 && pid != UINT32_MAX) || !buffer || size == 0 ||
         size > std::numeric_limits<DWORD>::max()) {
         return InvalidResult("Invalid memory read request.", pid, address, size);
     }

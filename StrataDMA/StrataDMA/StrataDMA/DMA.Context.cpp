@@ -30,7 +30,7 @@ DMAScatterBatch::DMAScatterBatch(std::shared_ptr<IVmmBackend> backend,
 DMAOperationResult DMAScatterBatch::AddRead(uint64_t address, void* buffer,
     size_t size)
 {
-    if (!session_ || address == 0 || !buffer || size == 0 ||
+    if (!session_ || (address == 0 && pid_ != UINT32_MAX) || !buffer || size == 0 ||
         size > std::numeric_limits<DWORD>::max()) {
         return InvalidTransfer("Invalid scatter read request.", pid_, address, size);
     }
@@ -156,7 +156,7 @@ DMAResult<DMAPointerTrace> DMAMemoryContext::TraceChain(uint64_t base,
     const std::vector<uint64_t>& offsets, size_t pointerWidth) const
 {
     DMAResult<DMAPointerTrace> result;
-    if (base == 0 || offsets.empty() || offsets.size() > 64 ||
+    if ((base == 0 && pid_ != UINT32_MAX) || offsets.empty() || offsets.size() > 64 ||
         (pointerWidth != 4 && pointerWidth != 8)) {
         result.operation = InvalidTransfer("Use a nonzero base, 1..64 offsets and a 4/8-byte pointer.", pid_, base, pointerWidth);
         return result;
@@ -188,7 +188,7 @@ DMAOperationResult DMAMemoryContext::ReadRaw(uint64_t address, void* buffer,
 {
     const ULONG64 resolvedFlags = DMAEnforceNoCache(
         flags == 0 ? defaultFlags_ : flags);
-    if (!IsValid() || address == 0 || !buffer || size == 0 ||
+    if (!IsValid() || (address == 0 && pid_ != UINT32_MAX) || !buffer || size == 0 ||
         size > std::numeric_limits<DWORD>::max()) {
         return InvalidTransfer("Invalid contextual read request.", pid_, address,
             size, resolvedFlags);
@@ -242,7 +242,7 @@ DMAResult<std::vector<DMAReadBlock>> DMAFrameContext::Gather(
     }
     std::unordered_set<uint64_t> pageSet;
     for (const auto& request : requests) {
-        if (request.address == 0 || request.size == 0 ||
+        if ((request.address == 0 && pid_ != UINT32_MAX) || request.size == 0 ||
             request.size > std::numeric_limits<DWORD>::max() ||
             request.size - 1 > std::numeric_limits<uint64_t>::max() - request.address) {
             result.operation = InvalidTransfer("Invalid gather request.", pid_,
