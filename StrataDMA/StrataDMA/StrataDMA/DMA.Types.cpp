@@ -6,7 +6,7 @@ std::vector<DMAInspectionColumn> DMAInspectionColumns(const std::string& kind)
         {"threads", {{"tid","number"},{"pid","number"},{"state","number"},{"running","boolean"},{"priority","number"},{"base_priority","number"},{"start","address"},{"win32_start","address"},{"ethread","address"},{"teb","address"},{"stack_base","address"},{"stack_limit","address"},{"kernel_stack_base","address"},{"kernel_stack_limit","address"},{"rip","address"},{"rsp","address"},{"created","filetime"},{"exited","filetime"},{"user_time","number"},{"kernel_time","number"},{"suspend_count","number"},{"wait_reason","number"}}},
         {"callstack", {{"frame","number"},{"return_address","address"},{"rsp","address"},{"base_sp","address"},{"module","text"},{"function","text"},{"displacement","number"},{"registers_present","boolean"}}},
         {"handles", {{"handle","address"},{"pid","number"},{"type","text"},{"name","text"},{"object","address"},{"access","address"},{"handle_count","number"},{"pointer_count","number"},{"security_descriptor","address"}}},
-        {"heaps", {{"address","address"},{"heap_id","number"},{"index","number"},{"type","number"},{"is_32_bit","boolean"}}},
+        {"heaps", {{"address","address"},{"heap_id","number"},{"index","number"},{"type","number"},{"is_32_bit","boolean"},{"segment_count","number"},{"segment_bytes","number"}}},
         {"heap-segments", {{"address","address"},{"size","number"},{"heap_index","number"},{"type","number"}}},
         {"heap-allocations", {{"address","address"},{"size","number"},{"type","number"}}},
         {"network", {{"pid","number"},{"state","number"},{"family","number"},{"local_address","text"},{"local_port","number"},{"remote_address","text"},{"remote_port","number"},{"local_valid","boolean"},{"remote_valid","boolean"},{"object","address"},{"created","filetime"},{"description","text"}}},
@@ -18,7 +18,7 @@ std::vector<DMAInspectionColumn> DMAInspectionColumns(const std::string& kind)
         {"pool", {{"tag","text"},{"address","address"},{"size","number"},{"pool_type","number"},{"segment_type","number"},{"allocated","boolean"}}},
         {"unloaded-modules", {{"name","text"},{"base","address"},{"size","number"},{"wow64","boolean"},{"checksum","address"},{"pe_timestamp","number"},{"unloaded","filetime"}}}
     };
-    const auto found = columns.find(kind);
+    const auto found = columns.find(kind == "kernel-unloaded-modules" ? "unloaded-modules" : kind);
     return found == columns.end() ? std::vector<DMAInspectionColumn>{} : found->second;
 }
 

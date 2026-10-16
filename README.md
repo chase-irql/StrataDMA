@@ -5,6 +5,10 @@
 `DMA::Inspect(DMAInspectionQuery)` exposes threads, call stacks, handles, heaps,
 heap segments/allocations, network endpoints, services, driver objects and dispatch
 functions, devices, kernel objects, pool allocations, and unloaded modules.
+`kernel-unloaded-modules` reads System/PID 4's kernel history without requiring
+an attachment; it rejects a process PID. Kernel symbol availability and retained
+history determine what the runtime can recover. Returned addresses can be reused
+after unloading and are historical metadata, not a preserved image.
 `DMAInspectionKinds` lists supported kinds. Process datasets accept an explicit
 PID or use the attached process; system datasets leave PID zero. Inspection never
 changes attachment and never writes target memory.
@@ -22,6 +26,12 @@ Unavailable maps return structured backend errors; mismatched map versions retur
 `Unsupported`. Readable data and recoverable stacks depend on the target Windows
 version, runtime, symbols, and available pages. Maps represent observations of a
 running system rather than an atomic snapshot.
+
+Heap rows include `segment_count` and `segment_bytes`, aggregated by heap index
+from the same owning native heap map. Byte totals use 64-bit arithmetic and are
+decimal strings. They sum recovered segment sizes, including zero-size records;
+they do not measure allocated, free or committed bytes. Heap allocation views
+remain separate.
 
 Call `DMA::InitializePlugins()` to enable VFS providers in an already-connected
 session. This preserves the device connection and process attachment; callers

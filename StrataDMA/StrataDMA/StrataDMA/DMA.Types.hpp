@@ -90,7 +90,7 @@ struct DMAInspectionTable {
 };
 inline const std::vector<std::string> DMAInspectionKinds = {
     "threads", "callstack", "handles", "heaps", "heap-segments", "heap-allocations",
-    "network", "services", "drivers", "driver-dispatch", "devices", "objects", "pool", "unloaded-modules"
+    "network", "services", "drivers", "driver-dispatch", "devices", "objects", "pool", "unloaded-modules", "kernel-unloaded-modules"
 };
 std::vector<DMAInspectionColumn> DMAInspectionColumns(const std::string& kind);
 

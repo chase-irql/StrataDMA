@@ -1,5 +1,6 @@
 #include "MockVmmBackend.hpp"
 #include "TestHarness.hpp"
+#include "StrataDMA/DMA.Inspection.Internal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -247,5 +248,32 @@ STRATA_TEST_CASE(inspection_maps_preserve_exact_cells_filter_page_and_attachment
     query.limit = 100; query.pid = 42;
     STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
     query.pid = 0; query.kind = "callstack";
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
+}
+
+STRATA_TEST_CASE(heap_segment_totals_join_by_heap_index_and_keep_64bit_sizes)
+{
+    std::array<VMMDLL_MAP_HEAP_SEGMENTENTRY, 4> segments{};
+    segments[0].iHeap = 7; segments[0].cb = 0xffffffff;
+    segments[1].iHeap = 2; segments[1].cb = 4096;
+    segments[2].iHeap = 7; segments[2].cb = 4096;
+    segments[3].iHeap = 2; segments[3].cb = 0;
+    const auto totals = StrataDetail::HeapSegmentTotals(segments.data(), static_cast<DWORD>(segments.size()));
+    STRATA_REQUIRE(totals.at(7).first == 2 && totals.at(7).second == 0x100000fffULL);
+    STRATA_REQUIRE(totals.at(2).first == 2 && totals.at(2).second == 4096);
+    STRATA_REQUIRE(StrataDetail::HeapSegmentTotals(nullptr, 0).empty());
+}
+
+STRATA_TEST_CASE(kernel_unloaded_history_does_not_require_or_replace_attachment)
+{
+    MockDmaFixture fixture;
+    fixture.Initialize();
+    DMAInspectionQuery query; query.kind = "kernel-unloaded-modules";
+    auto result = fixture.dma.Inspect(query);
+    STRATA_REQUIRE(result && result.value.total == 2 && !fixture.dma.IsAttached());
+    fixture.Attach();
+    result = fixture.dma.Inspect(query);
+    STRATA_REQUIRE(result && fixture.dma.GetPID() == MockVmmBackend::TargetPid);
+    query.pid = MockVmmBackend::TargetPid;
     STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
 }

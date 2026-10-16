@@ -1,4 +1,5 @@
 #include "DMA.Backend.hpp"
+#include "DMA.Inspection.Internal.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -69,7 +70,10 @@ DMAOperationResult VmmdllBackend::Inspect(const DMAInspectionQuery& q, DMAInspec
     if (q.kind == "heaps" || q.kind == "heap-segments") return CopyInspectionMap<VMMDLL_MAP_HEAP>(rows, VMMDLL_MAP_HEAP_VERSION,
         [&](auto p) { return VMMDLL_Map_GetHeap(handle_, q.pid, p); }, [&](const auto& map, auto& out) {
             if (q.kind == "heaps") {
-                for (DWORD i = 0; i < map.cMap; ++i) { const auto& e = map.pMap[i]; out.Add({A(e.va),N(e.dwHeapNum),N(e.iHeap),N(e.tp),B(e.f32 != FALSE)}); }
+                auto totals = StrataDetail::HeapSegmentTotals(map.pSegments, map.cSegments);
+                for (DWORD i = 0; i < map.cMap; ++i) { const auto& e = map.pMap[i]; const auto& total = totals[e.iHeap];
+                    out.Add({A(e.va),N(e.dwHeapNum),N(e.iHeap),N(e.tp),B(e.f32 != FALSE),N(total.first),N(total.second)});
+                }
             } else {
                 for (DWORD i = 0; i < map.cSegments; ++i) { const auto& e = map.pSegments[i]; out.Add({A(e.va),N(e.cb),N(e.iHeap),N(e.tp)}); }
             }
@@ -112,8 +116,8 @@ DMAOperationResult VmmdllBackend::Inspect(const DMAInspectionQuery& q, DMAInspec
                 out.Add({tag,A(e.va),N(e.cb),N(e.tpPool),N(e.tpSS),B(e.fAlloc != 0)});
             }
         });
-    if (q.kind == "unloaded-modules") return CopyInspectionMap<VMMDLL_MAP_UNLOADEDMODULE>(rows, VMMDLL_MAP_UNLOADEDMODULE_VERSION,
-        [&](auto p) { return VMMDLL_Map_GetUnloadedModuleU(handle_, q.pid, p); }, [](const auto& map, auto& out) {
+    if (q.kind == "unloaded-modules" || q.kind == "kernel-unloaded-modules") return CopyInspectionMap<VMMDLL_MAP_UNLOADEDMODULE>(rows, VMMDLL_MAP_UNLOADEDMODULE_VERSION,
+        [&](auto p) { return VMMDLL_Map_GetUnloadedModuleU(handle_, q.kind == "kernel-unloaded-modules" ? 4 : q.pid, p); }, [](const auto& map, auto& out) {
             for (DWORD i = 0; i < map.cMap; ++i) { const auto& e = map.pMap[i]; out.Add({S(e.uszText),A(e.vaBase),N(e.cbImageSize),B(e.fWoW64 != FALSE),A(e.dwCheckSum),N(e.dwTimeDateStamp),A(e.ftUnload)}); }
         });
     return DMAOperationResult::Failure(DMAStatus::InvalidArgument, "Unknown inspection kind.");
