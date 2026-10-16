@@ -54,6 +54,53 @@ std::vector<uint8_t> ReadFile(const std::filesystem::path& path)
 }
 }
 
+STRATA_TEST_CASE(saved_image_identity_and_relocations_need_no_device)
+{
+    const auto path = TemporaryFile("strata_dma_saved_image_test.bin");
+    for (const bool is64 : { false, true }) {
+        std::vector<uint8_t> bytes(0x12000);
+        const auto store = [&](size_t at, const auto& value) { std::memcpy(bytes.data() + at, &value, sizeof(value)); };
+        IMAGE_DOS_HEADER dos{}; dos.e_magic = IMAGE_DOS_SIGNATURE; dos.e_lfanew = 0x80; store(0, dos);
+        DWORD signature = IMAGE_NT_SIGNATURE; store(0x80, signature);
+        IMAGE_FILE_HEADER coff{}; coff.Machine = is64 ? IMAGE_FILE_MACHINE_AMD64 : IMAGE_FILE_MACHINE_I386;
+        coff.NumberOfSections = 1; coff.TimeDateStamp = 0xfedcba98;
+        coff.SizeOfOptionalHeader = is64 ? sizeof(IMAGE_OPTIONAL_HEADER64) : sizeof(IMAGE_OPTIONAL_HEADER32); store(0x84, coff);
+        const auto optional = [&](auto header) {
+            header.Magic = is64 ? IMAGE_NT_OPTIONAL_HDR64_MAGIC : IMAGE_NT_OPTIONAL_HDR32_MAGIC;
+            header.ImageBase = static_cast<decltype(header.ImageBase)>(is64 ? 0xfffff80000000000ULL : 0x400000);
+            header.SizeOfImage = static_cast<DWORD>(bytes.size()); header.AddressOfEntryPoint = 0x1000;
+            header.MajorImageVersion = 3; header.MinorImageVersion = 7; header.CheckSum = 0xabcdef01;
+            header.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
+            header.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC] = { 0x11000, 12 }; store(0x98, header);
+        };
+        if (is64) optional(IMAGE_OPTIONAL_HEADER64{}); else optional(IMAGE_OPTIONAL_HEADER32{});
+        IMAGE_BASE_RELOCATION block{}; block.VirtualAddress = 0xf000; block.SizeOfBlock = 12; store(0x11000, block);
+        WORD entry = static_cast<WORD>(((is64 ? IMAGE_REL_BASED_DIR64 : IMAGE_REL_BASED_HIGHLOW) << 12) | 0xffe); store(0x11008, entry);
+        const auto save = [&] { std::ofstream output(path, std::ios::binary | std::ios::trunc); output.write(reinterpret_cast<const char*>(bytes.data()), bytes.size()); };
+        save(); const auto result = DMA::InspectLoadedImage(path.u8string());
+        STRATA_REQUIRE(result); STRATA_REQUIRE(result.value.is64Bit == is64);
+        STRATA_REQUIRE(result.value.preferredBase == (is64 ? 0xfffff80000000000ULL : 0x400000));
+        STRATA_REQUIRE(result.value.timestamp == 0xfedcba98 && result.value.checksum == 0xabcdef01);
+        STRATA_REQUIRE(result.value.imageMajorVersion == 3 && result.value.imageMinorVersion == 7);
+        STRATA_REQUIRE(result.value.relocationsComplete && result.value.relocations.size() == 1);
+        STRATA_REQUIRE(result.value.relocations[0].rva == 0xfffe && result.value.relocations[0].width == (is64 ? 8 : 4));
+        const auto gap = DMA::InspectLoadedImage(path.u8string(), {{0x10000,1}});
+        STRATA_REQUIRE(gap && !gap.value.relocationsComplete && gap.value.relocations.empty());
+        STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string(), {{0x90,1}}));
+        STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string(), {{10,2},{11,1}}));
+        STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string(), {{bytes.size(),1}}));
+        store(0x1100a, entry); save();
+        STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string()).value.relocationsComplete);
+        WORD padding = 0; store(0x1100a, padding); entry = 0x7000; store(0x11008, entry); save();
+        STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string()).value.relocationsComplete);
+        block.SizeOfBlock = 10; store(0x11000, block); save();
+        STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string()).value.relocationsComplete);
+        bytes[0] = 0; save(); STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string()));
+    }
+    std::filesystem::remove(path);
+    STRATA_REQUIRE(DMA::InspectLoadedImage(path.u8string()).operation.status == DMAStatus::IoError);
+}
+
 STRATA_TEST_CASE(module_dump_rebuilds_file_layout_and_import_thunks)
 {
     MockDmaFixture fixture;

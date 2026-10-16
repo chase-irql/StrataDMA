@@ -252,6 +252,9 @@ public:
         return processMonitorRunning.load();
     }
 
+    // Inspect a saved mapped image without initializing or changing a DMA session.
+    static DMAResult<DMALoadedImageInfo> InspectLoadedImage(const std::string& path,
+        const std::vector<DMAImageGap>& missing = {});
     DMAOperationResult DumpModule(const std::string& moduleName,
         const std::string& outPath);
 

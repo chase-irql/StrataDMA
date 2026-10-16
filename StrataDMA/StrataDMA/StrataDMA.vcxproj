@@ -137,6 +137,7 @@
     <ClCompile Include="StrataDMA\DMA.cpp" />
     <ClCompile Include="StrataDMA\DMA.Input.cpp" />
     <ClCompile Include="StrataDMA\DMA.Module.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Image.cpp" />
     <ClCompile Include="StrataDMA\DMA.Scanner.cpp" />
     <ClCompile Include="StrataDMA\DMA.System.cpp" />
     <ClCompile Include="StrataDMA\DMA.Types.cpp" />

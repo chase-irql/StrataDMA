@@ -454,6 +454,18 @@ struct DMAVfsEntry {
     uint64_t lastWriteTime = 0;
 };
 
+struct DMAImageGap { uint64_t offset = 0; uint64_t size = 0; };
+struct DMAImageRelocation { uint32_t rva = 0; uint8_t width = 0; };
+struct DMALoadedImageInfo {
+    bool is64Bit = false;
+    uint16_t machine = 0, sectionCount = 0, imageMajorVersion = 0, imageMinorVersion = 0;
+    uint32_t timestamp = 0, checksum = 0, imageSize = 0, entryRva = 0;
+    uint64_t preferredBase = 0;
+    bool relocationsComplete = false;
+    std::string relocationMessage;
+    std::vector<DMAImageRelocation> relocations;
+};
+
 struct DMATimelineQuery {
     std::string path = "/forensic/timeline/timeline_all.txt";
     uint64_t offset = 0;

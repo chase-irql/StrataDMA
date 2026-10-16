@@ -531,6 +531,23 @@ nor malformed records are turned into fabricated events. Timestamps have the
 second precision provided by the text source; artifacts do not establish a full
 activity history or the present validity of an address.
 
+## Saved mapped-image inspection
+
+`DMA::InspectLoadedImage(path, missingRanges)` is a static, hardware-independent API
+for PE32/PE32+ images stored in mapped/RVA order. It returns machine, section count,
+header image version, raw COFF timestamp/checksum, image size, entry RVA, preferred
+base, and sorted x86 HIGHLOW/x64 DIR64 relocation fields with byte widths. ABSOLUTE
+padding is ignored. It does not initialize, attach, write or load a DMA runtime.
+
+Supply sorted, non-overlapping `DMAImageGap` offsets/sizes for unavailable source
+bytes. Missing headers fail analysis; missing/unsupported relocation data retains
+identity but sets `relocationsComplete=false` with `relocationMessage` and no usable
+plan. Duplicate/overlapping/out-of-image targets are rejected. Limits are 512 MiB
+source size, 1 MiB PE header offset, 8 MiB relocation directory, 262,144 fields and
+131,072 gaps. Discarded relocation sections may make normalization unavailable.
+Header image versions are not file/product versions; reproducible COFF timestamps
+are not necessarily dates. No build authenticity or tampering conclusion is inferred.
+
 ## Source layout
 
 - `DMA.hpp`: main public facade.
@@ -544,4 +561,5 @@ activity history or the present validity of an address.
 - `DMA.System.cpp`: process/PEB metadata, CR3 recovery, physical maps, and
   permission-aware code-cave discovery.
 - `DMA.Module.cpp`: PE reconstruction.
+- `DMA.Image.cpp`: bounded saved mapped-image PE identity and relocation inspection.
 - `DMA.Input.cpp`: keyboard, cursor, and gamepad support.

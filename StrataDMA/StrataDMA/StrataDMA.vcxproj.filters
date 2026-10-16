@@ -42,6 +42,9 @@
     <ClCompile Include="StrataDMA\DMA.Module.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="StrataDMA\DMA.Image.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="StrataDMA\DMA.Scanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

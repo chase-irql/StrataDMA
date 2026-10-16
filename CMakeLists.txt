@@ -30,6 +30,7 @@ set(STRATA_DMA_SOURCES
     "${STRATA_DMA_SOURCE_DIR}/DMA.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Input.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Module.cpp"
+    "${STRATA_DMA_SOURCE_DIR}/DMA.Image.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Scanner.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.System.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Types.cpp")
@@ -103,6 +104,7 @@ if(STRATA_DMA_BUILD_TESTS)
         "${STRATA_DMA_SOURCE_DIR}/DMA.cpp"
         "${STRATA_DMA_SOURCE_DIR}/DMA.Input.cpp"
         "${STRATA_DMA_SOURCE_DIR}/DMA.Module.cpp"
+        "${STRATA_DMA_SOURCE_DIR}/DMA.Image.cpp"
         "${STRATA_DMA_SOURCE_DIR}/DMA.Scanner.cpp"
         "${STRATA_DMA_SOURCE_DIR}/DMA.System.cpp"
         "${STRATA_DMA_SOURCE_DIR}/DMA.Types.cpp")
