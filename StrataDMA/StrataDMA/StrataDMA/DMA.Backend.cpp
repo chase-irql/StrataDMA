@@ -77,8 +77,8 @@ bool VadExecutable(DWORD protection)
 
 class VmmdllScatterSession final : public IVmmScatterSession {
 public:
-    explicit VmmdllScatterSession(VMMDLL_SCATTER_HANDLE handle)
-        : handle_(handle) {}
+    VmmdllScatterSession(VMMDLL_SCATTER_HANDLE handle, DWORD pid)
+        : handle_(handle), pid_(pid) {}
 
     ~VmmdllScatterSession() override
     {
@@ -91,7 +91,7 @@ public:
     {
         if (!handle_)
             return NotInitialized();
-        if (!buffer || !transferred || size == 0 || address == 0)
+        if (!buffer || !transferred || size == 0 || (address == 0 && pid_ != UINT32_MAX))
             return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
                 "Invalid scatter-read request.");
         if (!VMMDLL_Scatter_PrepareEx(handle_, address, size,
@@ -135,6 +135,7 @@ public:
 
 private:
     VMMDLL_SCATTER_HANDLE handle_ = nullptr;
+    DWORD pid_ = 0;
 };
 }
 
@@ -219,7 +220,7 @@ DMAOperationResult VmmdllBackend::ReadMemory(DWORD pid, uint64_t address,
     transferred = 0;
     if (!handle_)
         return NotInitialized();
-    if (!buffer || size == 0 || address == 0)
+    if (!buffer || size == 0 || (address == 0 && pid != UINT32_MAX))
         return DMAOperationResult::Failure(DMAStatus::InvalidArgument,
             "Invalid memory-read request.");
     const ULONG64 resolvedFlags = DMAEnforceNoCache(flags);
@@ -294,7 +295,7 @@ std::unique_ptr<IVmmScatterSession> VmmdllBackend::CreateScatter(
         return {};
     const DWORD resolvedFlags = static_cast<DWORD>(DMAEnforceNoCache(flags));
     auto handle = VMMDLL_Scatter_Initialize(handle_, pid, resolvedFlags);
-    return handle ? std::make_unique<VmmdllScatterSession>(handle) : nullptr;
+    return handle ? std::make_unique<VmmdllScatterSession>(handle, pid) : nullptr;
 }
 
 DMAOperationResult VmmdllBackend::FindPid(const std::string& name,
