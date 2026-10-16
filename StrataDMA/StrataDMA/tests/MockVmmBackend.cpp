@@ -274,6 +274,7 @@ DMAOperationResult MockVmmBackend::Initialize(
 {
     ++initializeCalls;
     initializeArguments = arguments;
+    initializeHistory.push_back(arguments);
     if (failInitialize)
         return Failure(DMAStatus::BackendError, "mock initialization failed");
     initialized = true;

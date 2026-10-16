@@ -59,10 +59,17 @@ STRATA_TEST_CASE(initialization_generates_a_missing_physical_memory_map)
     options.useMemoryMap = true;
     options.memoryMapPath = mapPath.string();
     options.fallbackWithoutMemoryMap = false;
+    options.extraArguments = { "-FoReNsIc", "2", "-norefresh" };
 
     const auto initialized = fixture.dma.Initialize(options);
     STRATA_REQUIRE(initialized);
     STRATA_REQUIRE(fixture.backend->initializeCalls.load() == 2);
+    STRATA_REQUIRE(fixture.backend->initializeHistory.size() == 2);
+    STRATA_REQUIRE(!HasArgument(fixture.backend->initializeHistory.front(), "-FoReNsIc"));
+    STRATA_REQUIRE(!HasArgument(fixture.backend->initializeHistory.front(), "2"));
+    STRATA_REQUIRE(HasArgument(fixture.backend->initializeHistory.front(), "-norefresh"));
+    STRATA_REQUIRE(HasArgument(fixture.backend->initializeArguments, "-FoReNsIc"));
+    STRATA_REQUIRE(HasArgument(fixture.backend->initializeArguments, "2"));
     STRATA_REQUIRE(std::filesystem::exists(mapPath));
     STRATA_REQUIRE(!fixture.backend->initializeArguments.empty());
     STRATA_REQUIRE(fixture.backend->initializeArguments.front().empty());

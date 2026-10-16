@@ -39,6 +39,7 @@ public:
     bool pluginsInitialized = false;
 
     std::vector<std::string> initializeArguments;
+    std::vector<std::vector<std::string>> initializeHistory;
     std::vector<std::pair<ULONG64, uint64_t>> configWrites;
     std::unordered_map<ULONG64, uint64_t> configValues;
     std::vector<uint8_t> memory;

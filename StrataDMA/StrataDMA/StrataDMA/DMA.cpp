@@ -218,8 +218,15 @@ DMAOperationResult DMA::Initialize(const DMAInitializationOptions& options)
         std::vector<std::string> probeArguments = {
             "", "-device", probeDevice, "-waitinitialize", "-norefresh"
         };
-        probeArguments.insert(probeArguments.end(), options.extraArguments.begin(),
-            options.extraArguments.end());
+        // The temporary map probe must not start asynchronous forensic work.
+        for (size_t i = 0; i < options.extraArguments.size(); ++i) {
+            if (NormalizeName(options.extraArguments[i]) == "-forensic") {
+                if (i + 1 < options.extraArguments.size())
+                    ++i;
+                continue;
+            }
+            probeArguments.push_back(options.extraArguments[i]);
+        }
 
         const auto probe = backend->Initialize(probeArguments);
         if (!probe) {
