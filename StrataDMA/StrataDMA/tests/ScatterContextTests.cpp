@@ -146,6 +146,23 @@ STRATA_TEST_CASE(frame_gather_prefetches_deduplicated_pages_and_caches_reads)
     STRATA_REQUIRE(fixture.backend->readCalls.load() == reads + 1);
 }
 
+STRATA_TEST_CASE(pointer_trace_preserves_hops_width_and_failure)
+{
+    MockDmaFixture fixture; fixture.Attach();
+    const uint64_t first = 0x5000, second = 0x6000;
+    fixture.backend->Store(0x4000, first); fixture.backend->Store(0x5000, second);
+    const auto context = fixture.dma.ProcessContext(42);
+    const auto trace = context.TraceChain(0x4000, { 0, 8 });
+    STRATA_REQUIRE(trace && trace.value.address == 0x6008);
+    STRATA_REQUIRE(trace.value.hops.size() == 2 && trace.value.hops[1].address == 0x5000);
+    STRATA_REQUIRE(context.TraceChain(0x4000, { 4 }, 4).value.address == 0x5004);
+    const auto failed = context.TraceChain(0x4000, { 0, 0, 0 });
+    STRATA_REQUIRE(!failed && failed.value.hops.size() == 3);
+    STRATA_REQUIRE(failed.operation.address == 0x6000);
+    STRATA_REQUIRE(!context.TraceChain(UINT64_MAX, { 0 }));
+    STRATA_REQUIRE(!context.TraceChain(0x4000, { 0 }, 5));
+}
+
 STRATA_TEST_CASE(frame_gather_rejects_invalid_ranges_and_read_failures)
 {
     MockDmaFixture fixture;

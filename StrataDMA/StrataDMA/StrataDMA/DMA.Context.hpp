@@ -18,6 +18,18 @@ struct DMAReadBlock {
     std::vector<uint8_t> bytes;
 };
 
+struct DMAPointerHop {
+    uint64_t address = 0;
+    uint64_t pointer = 0;
+    uint64_t offset = 0;
+    uint64_t next = 0;
+    DMAOperationResult operation;
+};
+struct DMAPointerTrace {
+    std::vector<DMAPointerHop> hops;
+    uint64_t address = 0;
+};
+
 struct DMAScatterRequestResult {
     size_t index = 0;
     bool write = false;
@@ -92,6 +104,8 @@ public:
 
     DMAOperationResult ReadRaw(uint64_t address, void* buffer, size_t size,
         ULONG64 flags = 0) const;
+    DMAResult<DMAPointerTrace> TraceChain(uint64_t base,
+        const std::vector<uint64_t>& offsets, size_t pointerWidth = 8) const;
     DMAOperationResult WriteRaw(uint64_t address, const void* buffer,
         size_t size) const;
 

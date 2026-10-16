@@ -473,6 +473,16 @@ and LeechCore components retain their upstream AGPLv3 and GPLv3 licenses; see
 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for versions, file scope, and
 source links.
 
+## Pointer-chain traces
+
+`dma.ProcessContext(pid).TraceChain(base, offsets, pointerWidth)` returns owning
+per-hop records (`address`, `pointer`, `offset`, `next`, `operation`) and the
+final address. Use `KernelContext(sessionPid)` for kernel mappings. Pointer width
+is 4 or 8 bytes; offsets are unsigned and each step dereferences before adding
+its offset. Traces allow 1–64 steps, stop on null pointers, overflow or failed
+reads, and retain the failed hop and its transfer diagnostics. They never change
+the primary attachment or write target memory.
+
 ## Source layout
 
 - `DMA.hpp`: main public facade.

@@ -152,6 +152,37 @@ bool DMAMemoryContext::IsValid() const noexcept
     return backend_ && backend_->IsInitialized() && pid_ != 0;
 }
 
+DMAResult<DMAPointerTrace> DMAMemoryContext::TraceChain(uint64_t base,
+    const std::vector<uint64_t>& offsets, size_t pointerWidth) const
+{
+    DMAResult<DMAPointerTrace> result;
+    if (base == 0 || offsets.empty() || offsets.size() > 64 ||
+        (pointerWidth != 4 && pointerWidth != 8)) {
+        result.operation = InvalidTransfer("Use a nonzero base, 1..64 offsets and a 4/8-byte pointer.", pid_, base, pointerWidth);
+        return result;
+    }
+    uint64_t current = base;
+    for (const auto offset : offsets) {
+        DMAPointerHop hop;
+        hop.address = current; hop.offset = offset;
+        if (current > UINT64_MAX - (pointerWidth - 1))
+            hop.operation = InvalidTransfer("Pointer read exceeds 64-bit memory.", pid_, current, pointerWidth);
+        else
+            hop.operation = ReadRaw(current, &hop.pointer, pointerWidth);
+        if (hop.operation && (hop.pointer == 0 || offset > UINT64_MAX - hop.pointer)) {
+            hop.operation.status = hop.pointer == 0 ? DMAStatus::NotFound : DMAStatus::InvalidArgument;
+            hop.operation.message = hop.pointer == 0 ? "Pointer chain reached a null pointer." : "Pointer plus offset exceeds 64-bit memory.";
+        }
+        if (hop.operation) hop.next = hop.pointer + offset;
+        result.value.hops.push_back(hop);
+        result.operation = hop.operation;
+        if (!hop.operation) return result;
+        current = hop.next;
+    }
+    result.value.address = current;
+    return result;
+}
+
 DMAOperationResult DMAMemoryContext::ReadRaw(uint64_t address, void* buffer,
     size_t size, ULONG64 flags) const
 {
