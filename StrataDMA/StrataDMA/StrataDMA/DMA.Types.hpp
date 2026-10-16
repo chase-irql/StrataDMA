@@ -73,6 +73,27 @@ struct DMAResult {
     explicit operator bool() const noexcept { return static_cast<bool>(operation); }
 };
 
+// Text cells preserve exact 64-bit values; column types describe their interpretation.
+struct DMAInspectionColumn { std::string name; std::string type; };
+struct DMAInspectionQuery {
+    std::string kind;
+    DWORD pid = 0;
+    uint64_t selector = 0;
+    size_t offset = 0;
+    size_t limit = 100;
+    std::string filter;
+};
+struct DMAInspectionTable {
+    std::vector<DMAInspectionColumn> columns;
+    std::vector<std::vector<std::string>> rows;
+    size_t total = 0;
+};
+inline const std::vector<std::string> DMAInspectionKinds = {
+    "threads", "callstack", "handles", "heaps", "heap-segments", "heap-allocations",
+    "network", "services", "drivers", "driver-dispatch", "devices", "objects", "pool", "unloaded-modules"
+};
+std::vector<DMAInspectionColumn> DMAInspectionColumns(const std::string& kind);
+
 struct DMAInitializationOptions {
     std::string device = "fpga://algo=0";
     bool useMemoryMap = true;

@@ -129,6 +129,7 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="StrataDMA\DMA.Advanced.cpp" />
+    <ClCompile Include="StrataDMA\DMA.Inspection.cpp" />
     <ClCompile Include="StrataDMA\DMA.Backend.cpp" />
     <ClCompile Include="StrataDMA\DMA.Backend.Interface.cpp" />
     <ClCompile Include="StrataDMA\DMA.Context.cpp" />

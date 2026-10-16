@@ -8,6 +8,26 @@
 #include <limits>
 #include <stdexcept>
 
+DMAOperationResult MockVmmBackend::Inspect(const DMAInspectionQuery& query, DMAInspectionTable& table) const
+{
+    table = {};
+    if (!initialized) return DMAOperationResult::Failure(DMAStatus::NotInitialized, "Mock backend is not initialized.");
+    const auto found = inspectionTables.find(query.kind);
+    if (found == inspectionTables.end()) return DMAOperationResult::Failure(DMAStatus::Unsupported, "Mock inspection map unavailable.");
+    table.columns = found->second.columns;
+    std::string filter = query.filter;
+    std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const auto& row : found->second.rows) {
+        bool match = filter.empty();
+        for (auto cell : row) {
+            std::transform(cell.begin(), cell.end(), cell.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (cell.find(filter) != std::string::npos) match = true;
+        }
+        if (match && table.total++ >= query.offset && table.rows.size() < query.limit) table.rows.push_back(row);
+    }
+    return DMAOperationResult::Success();
+}
+
 namespace {
 DMAOperationResult Failure(DMAStatus status, const char* message)
 {
@@ -92,6 +112,21 @@ private:
 MockVmmBackend::MockVmmBackend()
     : memory(0x20000), registryHiveBytes(0x1000)
 {
+    for (const auto& kind : DMAInspectionKinds) {
+        DMAInspectionTable table; table.columns = DMAInspectionColumns(kind);
+        for (size_t i = 0; i < 2; ++i) {
+            std::vector<std::string> row;
+            for (const auto& column : table.columns) {
+                if (column.type == "address") row.push_back(i == 0 ? "0xfffff80712345000" : "0xfffff80712346000");
+                else if (column.type == "filetime") row.push_back("0x01da000000000000");
+                else if (column.type == "boolean") row.push_back(i == 0 ? "true" : "false");
+                else if (column.type == "number") row.push_back(column.name == "pid" ? "42" : std::to_string(i + 1));
+                else row.push_back("mock-" + kind + "-" + std::to_string(i + 1));
+            }
+            table.rows.push_back(std::move(row));
+        }
+        table.total = table.rows.size(); inspectionTables.emplace(kind, std::move(table));
+    }
     DMAProcessInfo process;
     process.pid = TargetPid;
     process.parentPid = 4;

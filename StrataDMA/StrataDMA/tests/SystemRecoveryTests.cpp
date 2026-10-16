@@ -221,3 +221,31 @@ STRATA_TEST_CASE(physical_map_errors_are_structured)
     STRATA_REQUIRE_STATUS(fixture.dma.ExportPhysicalMemoryMap(""),
         DMAStatus::InvalidArgument);
 }
+
+STRATA_TEST_CASE(inspection_maps_preserve_exact_cells_filter_page_and_attachment)
+{
+    MockDmaFixture fixture;
+    DMAInspectionQuery query; query.kind = "threads";
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::NotInitialized);
+    fixture.Initialize();
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::NotAttached);
+    for (const auto& kind : DMAInspectionKinds) {
+        query = {}; query.kind = kind; query.limit = 1; query.offset = 1; query.filter = "FFFFF807";
+        if (kind == "threads" || kind == "callstack" || kind == "handles" || kind == "heaps" || kind == "heap-segments" || kind == "heap-allocations" || kind == "unloaded-modules") query.pid = 42;
+        if (kind == "callstack") query.selector = 1;
+        const auto result = fixture.dma.Inspect(query);
+        STRATA_REQUIRE(result && result.value.total == 2 && result.value.rows.size() == 1);
+        STRATA_REQUIRE(result.value.rows[0].size() == result.value.columns.size());
+        for (size_t i = 0; i < result.value.columns.size(); ++i)
+            if (result.value.columns[i].type == "address") STRATA_REQUIRE(result.value.rows[0][i] == "0xfffff80712346000");
+        STRATA_REQUIRE(!fixture.dma.IsAttached());
+    }
+    query = {}; query.kind = "unknown";
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
+    query.kind = "network"; query.limit = 0;
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
+    query.limit = 100; query.pid = 42;
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
+    query.pid = 0; query.kind = "callstack";
+    STRATA_REQUIRE_STATUS(fixture.dma.Inspect(query).operation, DMAStatus::InvalidArgument);
+}

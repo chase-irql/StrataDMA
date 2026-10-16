@@ -54,6 +54,7 @@ public:
     std::vector<DMARegistryKeyInfo> registryKeys;
     std::vector<DMARegistryValue> registryValues;
     std::vector<DMAVfsEntry> vfsEntries;
+    std::unordered_map<std::string, DMAInspectionTable> inspectionTables;
     std::unordered_map<std::string, std::vector<uint8_t>> vfsFiles;
 
     std::atomic<size_t> initializeCalls{ 0 };
@@ -83,6 +84,7 @@ public:
     void Close() override;
     bool IsInitialized() const noexcept override { return initialized; }
     DMAOperationResult InitializePlugins() override;
+    DMAOperationResult Inspect(const DMAInspectionQuery& query, DMAInspectionTable& table) const override;
     DMAOperationResult ConfigGet(ULONG64 option, uint64_t& value) const override;
     DMAOperationResult ConfigSet(ULONG64 option, uint64_t value) override;
     DMAOperationResult ReadMemory(DWORD pid, uint64_t address, void* buffer,

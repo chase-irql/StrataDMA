@@ -23,6 +23,7 @@ set(STRATA_DMA_SOURCE_DIR "${STRATA_DMA_ROOT}/StrataDMA")
 set(STRATA_DMA_SOURCES
     "${STRATA_DMA_SOURCE_DIR}/DMA.Advanced.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Backend.cpp"
+    "${STRATA_DMA_SOURCE_DIR}/DMA.Inspection.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Backend.Interface.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.Context.cpp"
     "${STRATA_DMA_SOURCE_DIR}/DMA.cpp"

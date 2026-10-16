@@ -117,6 +117,7 @@ public:
     std::vector<DWORD> FindProcessIds(const std::string& processName) const;
     std::vector<DMAProcessInfo> GetProcesses() const;
     DMAResult<DMAProcessInfo> GetProcessInfo(DWORD pid = 0) const;
+    DMAResult<DMAInspectionTable> Inspect(DMAInspectionQuery query) const;
     DMAResult<DMAPebInfo> GetProcessEnvironmentBlock(DWORD pid = 0,
         bool preferWow64 = true) const;
 

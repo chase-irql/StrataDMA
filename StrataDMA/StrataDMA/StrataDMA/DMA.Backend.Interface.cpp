@@ -12,6 +12,7 @@ DMAOperationResult Unsupported(const char* operation)
     DMAOperationResult IVmmBackend::method signature { return Unsupported(#method); }
 
 DMA_BACKEND_UNSUPPORTED(InitializePlugins, ())
+DMA_BACKEND_UNSUPPORTED(Inspect, (const DMAInspectionQuery&, DMAInspectionTable&) const)
 DMA_BACKEND_UNSUPPORTED(ConfigGet, (ULONG64, uint64_t&) const)
 DMA_BACKEND_UNSUPPORTED(ConfigSet, (ULONG64, uint64_t))
 DMA_BACKEND_UNSUPPORTED(ReadMemory, (DWORD, uint64_t, void*, DWORD, ULONG64, DWORD&))

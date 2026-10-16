@@ -5,6 +5,39 @@
 #include <cstring>
 #include <limits>
 
+DMAResult<DMAInspectionTable> DMA::Inspect(DMAInspectionQuery query) const
+{
+    DMAResult<DMAInspectionTable> result;
+    if (std::find(DMAInspectionKinds.begin(), DMAInspectionKinds.end(), query.kind) == DMAInspectionKinds.end() ||
+        query.limit == 0 || query.limit > 4096 || query.offset > UINT32_MAX || query.filter.size() > 256 ||
+        (query.kind == "callstack" && (query.selector == 0 || query.selector > UINT32_MAX)) ||
+        (query.selector != 0 && query.kind != "callstack" && query.kind != "heap-allocations" && query.kind != "driver-dispatch")) {
+        result.operation = DMAOperationResult::Failure(DMAStatus::InvalidArgument, "Invalid inspection kind, selector, filter or page bounds.");
+        return result;
+    }
+    if (!IsInitialized()) {
+        result.operation = DMAOperationResult::Failure(DMAStatus::NotInitialized, "Initialize DMA before inspecting data.");
+        return result;
+    }
+    const bool process = query.kind == "threads" || query.kind == "callstack" || query.kind == "handles" ||
+        query.kind == "heaps" || query.kind == "heap-segments" || query.kind == "heap-allocations" || query.kind == "unloaded-modules";
+    if (process) {
+        if (query.pid == 0) query.pid = targetPID;
+        if (query.pid == 0) {
+            result.operation = DMAOperationResult::Failure(DMAStatus::NotAttached, "Select a process or supply its PID.");
+            return result;
+        }
+        const auto info = GetProcessInfo(query.pid);
+        if (!info) { result.operation = info.operation; return result; }
+    } else if (query.pid != 0) {
+        result.operation = DMAOperationResult::Failure(DMAStatus::InvalidArgument, "System inspection does not accept a process PID.");
+        return result;
+    }
+    result.operation = backend->Inspect(query, result.value);
+    result.operation.pid = query.pid;
+    return result;
+}
+
 namespace {
 DMAOperationResult InvalidResult(const char* message, DWORD pid = 0,
     uint64_t address = 0, size_t size = 0)

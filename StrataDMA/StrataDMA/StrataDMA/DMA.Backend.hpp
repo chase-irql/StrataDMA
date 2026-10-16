@@ -43,6 +43,7 @@ public:
     virtual DMAOperationResult FindPid(const std::string& name, DWORD& pid) const;
     virtual DMAOperationResult GetProcess(DWORD pid, DMAProcessInfo& process) const;
     virtual DMAOperationResult GetProcesses(std::vector<DMAProcessInfo>& processes) const;
+    virtual DMAOperationResult Inspect(const DMAInspectionQuery& query, DMAInspectionTable& table) const;
     virtual DMAOperationResult GetPhysicalMemoryMap(
         std::vector<DMAPhysicalMemoryRange>& ranges) const;
     virtual DMAOperationResult GetModule(DWORD pid, const std::string& name,
@@ -95,6 +96,7 @@ public:
 
 class VmmdllBackend final : public IVmmBackend {
 public:
+    DMAOperationResult Inspect(const DMAInspectionQuery& query, DMAInspectionTable& table) const override;
     ~VmmdllBackend() override;
 
     DMAOperationResult Initialize(const std::vector<std::string>& arguments) override;

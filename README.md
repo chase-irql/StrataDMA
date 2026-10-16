@@ -1,5 +1,28 @@
 # StrataDMA
 
+## OS inspection tables
+
+`DMA::Inspect(DMAInspectionQuery)` exposes threads, call stacks, handles, heaps,
+heap segments/allocations, network endpoints, services, driver objects and dispatch
+functions, devices, kernel objects, pool allocations, and unloaded modules.
+`DMAInspectionKinds` lists supported kinds. Process datasets accept an explicit
+PID or use the attached process; system datasets leave PID zero. Inspection never
+changes attachment and never writes target memory.
+
+The result owns its strings and exposes ordered `columns` (`name`, `type`), rows,
+and the filtered `total`. Cell types are `text`, `number`, `address`, `filetime`,
+and `boolean`; decimal numbers and hexadecimal addresses/timestamps are strings
+to preserve 64-bit precision across language bindings. Set `offset`, `limit`
+(1–4096), and an optional case-insensitive `filter` (up to 256 bytes). Native maps
+are freed after copying only the requested page. `selector` is the thread ID for
+`callstack`, heap number/address for `heap-allocations`, or optional driver-object
+address for `driver-dispatch`. Zero selects heap number zero or all drivers.
+
+Unavailable maps return structured backend errors; mismatched map versions return
+`Unsupported`. Readable data and recoverable stacks depend on the target Windows
+version, runtime, symbols, and available pages. Maps represent observations of a
+running system rather than an atomic snapshot.
+
 [![Windows and Linux tests](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml/badge.svg)](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
