@@ -85,7 +85,8 @@ STRATA_TEST_CASE(saved_image_identity_and_relocations_need_no_device)
         STRATA_REQUIRE(result.value.relocationsComplete && result.value.relocations.size() == 1);
         STRATA_REQUIRE(result.value.relocations[0].rva == 0xfffe && result.value.relocations[0].width == (is64 ? 8 : 4));
         const auto gap = DMA::InspectLoadedImage(path.u8string(), {{0x10000,1}});
-        STRATA_REQUIRE(gap && !gap.value.relocationsComplete && gap.value.relocations.empty());
+        STRATA_REQUIRE(gap && !gap.value.relocationsComplete && gap.value.relocationPlanComplete);
+        STRATA_REQUIRE(gap.value.relocations.size() == 1 && !gap.value.relocations[0].readable);
         STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string(), {{0x90,1}}));
         STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string(), {{10,2},{11,1}}));
         STRATA_REQUIRE(!DMA::InspectLoadedImage(path.u8string(), {{bytes.size(),1}}));

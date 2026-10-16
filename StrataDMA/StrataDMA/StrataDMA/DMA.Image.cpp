@@ -99,16 +99,18 @@ DMAResult<DMALoadedImageInfo> DMA::InspectLoadedImage(const std::string& path,
                     require(type == (info.is64Bit ? IMAGE_REL_BASED_DIR64 : IMAGE_REL_BASED_HIGHLOW), "Unsupported base relocation type.");
                     const auto rva = static_cast<uint64_t>(block.VirtualAddress) + (entry & 0xfff);
                     const uint8_t width = info.is64Bit ? 8 : 4;
-                    require(rva <= info.imageSize && width <= info.imageSize - rva && known(rva, width), "A relocation target is unreadable or outside the image.");
+                    require(rva <= info.imageSize && width <= info.imageSize - rva && rva <= size && width <= size - rva, "A relocation target is outside the saved image.");
                     require(info.relocations.size() < 262144, "Base relocation count exceeds 262,144.");
-                    info.relocations.push_back({ static_cast<uint32_t>(rva), width });
+                    info.relocations.push_back({ static_cast<uint32_t>(rva), width, known(rva, width) });
                 }
                 at += block.SizeOfBlock;
             }
             std::sort(info.relocations.begin(), info.relocations.end(), [](const auto& a, const auto& b) { return a.rva < b.rva; });
             for (size_t i = 1; i < info.relocations.size(); ++i)
                 require(info.relocations[i].rva >= info.relocations[i - 1].rva + info.relocations[i - 1].width, "Overlapping or duplicate relocation targets.");
-            info.relocationsComplete = true;
+            info.relocationPlanComplete = true;
+            info.relocationsComplete = std::all_of(info.relocations.begin(), info.relocations.end(), [](const auto& field) { return field.readable; });
+            if (!info.relocationsComplete) info.relocationMessage = "Some relocation words overlap unreadable memory; their complete words must remain unknown during normalization.";
         } catch (const std::runtime_error& error) {
             info.relocations.clear(); info.relocationMessage = error.what();
         }

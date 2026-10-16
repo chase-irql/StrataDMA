@@ -456,13 +456,15 @@ struct DMAVfsEntry {
 };
 
 struct DMAImageGap { uint64_t offset = 0; uint64_t size = 0; };
-struct DMAImageRelocation { uint32_t rva = 0; uint8_t width = 0; };
+struct DMAImageRelocation { uint32_t rva = 0; uint8_t width = 0; bool readable = true; };
 struct DMALoadedImageInfo {
     bool is64Bit = false;
     uint16_t machine = 0, sectionCount = 0, imageMajorVersion = 0, imageMinorVersion = 0;
     uint32_t timestamp = 0, checksum = 0, imageSize = 0, entryRva = 0;
     uint64_t preferredBase = 0;
+    // Preserve strict completeness for existing callers while exposing partial readable plans.
     bool relocationsComplete = false;
+    bool relocationPlanComplete = false;
     std::string relocationMessage;
     std::vector<DMAImageRelocation> relocations;
 };
