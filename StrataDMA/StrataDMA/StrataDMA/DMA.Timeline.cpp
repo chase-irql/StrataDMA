@@ -82,6 +82,21 @@ DMAResult<DMATimelinePage> DMA::ReadTimeline(const DMATimelineQuery& query) cons
         result.operation = DMAOperationResult::Failure(DMAStatus::NotInitialized, "Initialize DMA before reading a forensic timeline.");
         return result;
     }
+    std::vector<DMAVfsEntry> files;
+    const auto listed = backend->ListVfs("\\forensic\\timeline", files);
+    if (!listed) { result.operation = listed; return result; }
+    const auto name = path.substr(path.find_last_of('\\') + 1);
+    const auto file = std::find_if(files.begin(), files.end(), [&](const auto& entry) { return !entry.directory && entry.name == name; });
+    if (file == files.end()) {
+        result.operation = DMAOperationResult::Failure(DMAStatus::NotFound, "The prepared forensic timeline file is unavailable."); return result;
+    }
+    const auto sourceSize = file->size;
+    if (query.offset > sourceSize) {
+        result.operation = DMAOperationResult::Failure(DMAStatus::InvalidArgument, "Timeline offset exceeds the source size."); return result;
+    }
+    if (query.offset == sourceSize) {
+        result.value.endOfFile = true; result.operation = DMAOperationResult::Success(); return result;
+    }
     if (query.offset) {
         char previous = 0; DWORD transferred = 0;
         const auto op = backend->ReadVfs(path, query.offset - 1, &previous, 1, transferred);
@@ -106,13 +121,18 @@ DMAResult<DMATimelinePage> DMA::ReadTimeline(const DMATimelineQuery& query) cons
     };
     while (result.value.readBytes < query.maxBytes) {
         char buffer[16384]; DWORD transferred = 0;
-        const auto size = static_cast<DWORD>(std::min(sizeof(buffer), query.maxBytes - result.value.readBytes));
+        const auto available = std::min<uint64_t>(query.maxBytes - result.value.readBytes, sourceSize - query.offset - result.value.readBytes);
+        const auto size = static_cast<DWORD>(std::min<uint64_t>(sizeof(buffer), available));
         auto op = backend->ReadVfs(path, query.offset + result.value.readBytes, buffer, size, transferred);
         if (transferred > size) {
             result.operation = DMAOperationResult::Failure(DMAStatus::BackendError, "Timeline provider returned an invalid byte count."); return result;
         }
         if (!op) { result.operation = op; return result; }
         result.value.readBytes += transferred;
+        if (transferred != size) {
+            result.operation = DMAOperationResult::Failure(DMAStatus::PartialTransfer, "Timeline provider returned a short read before its reported end.");
+            result.operation.requestedBytes = size; result.operation.transferredBytes = transferred; return result;
+        }
         pending.append(buffer, transferred);
         size_t begin = 0, newline;
         while ((newline = pending.find('\n', begin)) != std::string::npos) {
@@ -122,13 +142,13 @@ DMAResult<DMATimelinePage> DMA::ReadTimeline(const DMATimelineQuery& query) cons
             consume(pending.substr(begin, newline - begin), cursor);
             cursor += newline + 1 - begin; begin = newline + 1;
             result.value.nextOffset = cursor; result.value.scannedBytes = static_cast<size_t>(cursor - query.offset);
-            if (result.value.events.size() == query.limit) { result.operation = DMAOperationResult::Success(result.value.readBytes); return result; }
+            if (result.value.events.size() == query.limit) { result.value.endOfFile = cursor == sourceSize; result.operation = DMAOperationResult::Success(result.value.readBytes); return result; }
         }
         pending.erase(0, begin);
         if (pending.size() > 65536) {
             result.operation = DMAOperationResult::Failure(DMAStatus::Unsupported, "Timeline line exceeds 64 KiB; this page is incomplete."); return result;
         }
-        if (!transferred) {
+        if (query.offset + result.value.readBytes == sourceSize) {
             if (!pending.empty()) { consume(pending, cursor); cursor += pending.size(); }
             result.value.nextOffset = cursor; result.value.scannedBytes = static_cast<size_t>(cursor - query.offset); result.value.endOfFile = true;
             result.operation = DMAOperationResult::Success(result.value.readBytes); return result;

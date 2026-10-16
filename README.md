@@ -521,7 +521,8 @@ the reader itself; unavailable files remain explicit backend failures.
 Queries accept inclusive `from`/`until` UTC timestamps (`YYYY-MM-DDTHH:mm:ssZ`),
 action, PID and case-insensitive ASCII text filters. Pages preserve file order,
 exact 64-bit addresses and source byte offsets. Resume using `nextOffset`; offsets
-must follow complete lines. The default budget is 1 MiB/100 matches, bounded to
+must follow complete lines. VFS-reported length defines EOF; reads never probe
+beyond it, and premature short reads remain partial-transfer errors. The default budget is 1 MiB/100 matches, bounded to
 4 MiB/4,096 matches. Records may span read blocks; malformed UTF-8, timestamps or
 numeric fields are counted separately. Headers are counted separately from events.
 Lines over 64 KiB fail explicitly. `scannedBytes` counts complete source bytes

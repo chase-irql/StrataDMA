@@ -607,6 +607,8 @@ DMAOperationResult MockVmmBackend::ReadVfs(const std::string& path,
     const auto found = vfsFiles.find(path);
     if (found == vfsFiles.end())
         return Failure(DMAStatus::NotFound, "mock VFS file not found");
+    if (path.compare(0, 19, "\\forensic\\timeline\\") == 0 && offset >= found->second.size())
+        return Failure(DMAStatus::NotFound, "mock timeline EOF is not readable");
     if (!buffer || offset >= found->second.size())
         return DMAOperationResult::Success();
     transferred = static_cast<DWORD>(std::min<uint64_t>(size,
