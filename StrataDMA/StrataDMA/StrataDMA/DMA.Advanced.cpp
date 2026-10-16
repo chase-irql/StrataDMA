@@ -5,6 +5,12 @@
 #include <cstring>
 #include <limits>
 
+DMAOperationResult DMA::InitializePlugins()
+{
+    if (!IsInitialized()) return DMAOperationResult::Failure(DMAStatus::NotInitialized, "Initialize DMA before loading plugins.");
+    return backend->InitializePlugins();
+}
+
 DMAResult<DMAInspectionTable> DMA::Inspect(DMAInspectionQuery query) const
 {
     DMAResult<DMAInspectionTable> result;

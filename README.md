@@ -23,6 +23,10 @@ Unavailable maps return structured backend errors; mismatched map versions retur
 version, runtime, symbols, and available pages. Maps represent observations of a
 running system rather than an atomic snapshot.
 
+Call `DMA::InitializePlugins()` to enable VFS providers in an already-connected
+session. This preserves the device connection and process attachment; callers
+should initialize providers once per session and retain any returned diagnostics.
+
 [![Windows and Linux tests](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml/badge.svg)](https://github.com/chase-irql/StrataDMA/actions/workflows/tests.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 

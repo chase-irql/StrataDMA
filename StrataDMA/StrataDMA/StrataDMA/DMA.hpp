@@ -101,6 +101,7 @@ public:
     }
 
     DMAOperationResult Initialize(const DMAInitializationOptions& options);
+    DMAOperationResult InitializePlugins();
     void Disconnect();
     bool IsInitialized() const noexcept
     {
@@ -280,7 +281,7 @@ public:
     DMAOperationResult WriteRegistryHive(uint64_t cmHiveAddress,
         uint32_t relativeAddress, const void* buffer, size_t size);
 
-    // VFS methods require DMAInitializationOptions::initializePlugins.
+    // VFS methods require InitializePlugins() or the initializePlugins startup option.
     DMAResult<std::vector<DMAVfsEntry>> ListVfs(const std::string& path) const;
     DMAResult<std::vector<uint8_t>> ReadVfsFile(const std::string& path,
         size_t maxBytes = 64 * 1024 * 1024) const;
