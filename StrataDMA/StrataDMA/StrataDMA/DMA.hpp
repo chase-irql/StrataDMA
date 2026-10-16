@@ -287,6 +287,7 @@ public:
 
     // VFS methods require InitializePlugins() or the initializePlugins startup option.
     DMAResult<std::vector<DMAVfsEntry>> ListVfs(const std::string& path) const;
+    DMAResult<DMATimelinePage> ReadTimeline(const DMATimelineQuery& query) const;
     DMAResult<std::vector<uint8_t>> ReadVfsFile(const std::string& path,
         size_t maxBytes = 64 * 1024 * 1024) const;
     DMAOperationResult ReadVfs(const std::string& path, uint64_t offset,

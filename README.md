@@ -508,6 +508,28 @@ its offset. Traces allow 1–64 steps, stop on null pointers, overflow or failed
 reads, and retain the failed hop and its transfer diagnostics. They never change
 the primary attachment or write target memory.
 
+## Forensic timeline pages
+
+`ReadTimeline(DMATimelineQuery)` reads completed MemProcFS text timelines through
+the existing VFS backend without changing forensic mode or attachment. Initialize
+plugins first. The default source is `/forensic/timeline/timeline_all.txt`; other
+`timeline_*.txt` sources are supported. A stable memory image can be initialized
+with `extraArguments = { "-forensic", "2" }` and `initializePlugins = true` to
+prepare timelines using temporary forensic storage. Preparation is not started by
+the reader itself; unavailable files remain explicit backend failures.
+
+Queries accept inclusive `from`/`until` UTC timestamps (`YYYY-MM-DDTHH:mm:ssZ`),
+action, PID and case-insensitive ASCII text filters. Pages preserve file order,
+exact 64-bit addresses and source byte offsets. Resume using `nextOffset`; offsets
+must follow complete lines. The default budget is 1 MiB/100 matches, bounded to
+4 MiB/4,096 matches. Records may span read blocks; malformed UTF-8, timestamps or
+numeric fields are counted separately. Headers are counted separately from events.
+Lines over 64 KiB fail explicitly. `scannedBytes` counts complete source bytes
+examined; `readBytes` also includes provider read-ahead. Neither unavailable data
+nor malformed records are turned into fabricated events. Timestamps have the
+second precision provided by the text source; artifacts do not establish a full
+activity history or the present validity of an address.
+
 ## Source layout
 
 - `DMA.hpp`: main public facade.
@@ -516,6 +538,7 @@ the primary attachment or write target memory.
 - `DMA.Context.*`: process/kernel contexts, frame cache, and RAII scatter.
 - `DMA.Advanced.cpp`: results, maps, symbols, snapshots, monitoring, registry,
   and VFS facade methods.
+- `DMA.Timeline.cpp`: bounded forensic timeline parsing and filtering through VFS.
 - `DMA.Scanner.cpp`: compiled-pattern and module scanners.
 - `DMA.System.cpp`: process/PEB metadata, CR3 recovery, physical maps, and
   permission-aware code-cave discovery.

@@ -454,6 +454,37 @@ struct DMAVfsEntry {
     uint64_t lastWriteTime = 0;
 };
 
+struct DMATimelineQuery {
+    std::string path = "/forensic/timeline/timeline_all.txt";
+    uint64_t offset = 0;
+    size_t limit = 100;
+    size_t maxBytes = 1024 * 1024;
+    std::string filter;
+    std::string action;
+    std::string from; // Inclusive UTC ISO timestamp, second precision, or empty.
+    std::string until;
+    DWORD pid = 0; // Zero includes all PIDs.
+};
+struct DMATimelineEvent {
+    std::string timestamp;
+    std::string type;
+    std::string action;
+    DWORD pid = 0;
+    DWORD number = 0;
+    uint64_t address = 0;
+    std::string description;
+    uint64_t offset = 0;
+};
+struct DMATimelinePage {
+    std::vector<DMATimelineEvent> events;
+    uint64_t nextOffset = 0;
+    size_t scannedBytes = 0;
+    size_t readBytes = 0;
+    size_t malformedLines = 0;
+    size_t headerLines = 0;
+    bool endOfFile = false;
+};
+
 struct DMAGamepadConfig {
     int pollIntervalMs = 4;
     bool debug = false;

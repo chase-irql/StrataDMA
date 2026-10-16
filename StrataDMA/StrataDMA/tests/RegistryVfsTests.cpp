@@ -171,3 +171,62 @@ STRATA_TEST_CASE(optional_backend_methods_default_to_unsupported)
         transferred), DMAStatus::Unsupported);
     STRATA_REQUIRE(!backend.CreateScatter(42, 0));
 }
+
+STRATA_TEST_CASE(timeline_pages_preserve_exact_fields_and_filter_utc_events)
+{
+    MockDmaFixture fixture; fixture.Initialize(true);
+    DMATimelineQuery query; query.limit = 1;
+    const auto first = fixture.dma.ReadTimeline(query);
+    STRATA_REQUIRE(first && first.value.events.size() == 1);
+    STRATA_REQUIRE(first.value.events[0].address == UINT64_C(0xfffffffffffffff0));
+    STRATA_REQUIRE(first.value.events[0].timestamp == "2026-10-15T12:00:02Z");
+    STRATA_REQUIRE(first.value.scannedBytes == first.value.nextOffset && first.value.readBytes >= first.value.scannedBytes);
+    query.offset = first.value.nextOffset;
+    const auto second = fixture.dma.ReadTimeline(query);
+    STRATA_REQUIRE(second && second.value.events[0].type == "REG");
+    STRATA_REQUIRE(second.value.events[0].offset == query.offset);
+    query.offset = 0; query.limit = 100; query.action = "DEL"; query.pid = 42;
+    query.from = "2026-10-15T12:00:00Z"; query.until = "2026-10-15T12:00:01Z";
+    query.filter = "TEST.EXE";
+    const auto filtered = fixture.dma.ReadTimeline(query);
+    STRATA_REQUIRE(filtered && filtered.value.events.size() == 1 && filtered.value.endOfFile);
+    STRATA_REQUIRE(filtered.value.events[0].description == "test.exe stopped");
+    STRATA_REQUIRE(fixture.backend->initialized && fixture.dma.GetPID() == 0);
+}
+STRATA_TEST_CASE(timeline_bounds_and_line_alignment_are_validated)
+{
+    MockDmaFixture fixture; DMATimelineQuery query;
+    query.from = "2026-02-30T00:00:00Z";
+    STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::InvalidArgument);
+    query.from.clear(); STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::NotInitialized);
+    fixture.Initialize(true); query.offset = 1;
+    STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::InvalidArgument);
+    query.offset = 0; query.path = "/forensic/timeline/../secret.txt";
+    STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::InvalidArgument);
+    query.path = "/forensic/timeline/timeline_all.txt"; query.limit = 4097;
+    STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::InvalidArgument);
+    query.limit = 100; query.maxBytes = 65536;
+    STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::InvalidArgument);
+}
+STRATA_TEST_CASE(timeline_streams_split_lines_and_reports_malformed_records)
+{
+    MockDmaFixture fixture; fixture.Initialize(true);
+    const std::string line = "2024-02-29 00:00:00 UTC PROC CRE 42 7 fffffffffffffff0 " + std::string(20000, 'x');
+    const std::string text = "DATE TYPE ACTION PID NUM HEX DESC\n=====\nmalformed\n" + line + "\r\n" + line;
+    fixture.backend->vfsFiles["\\forensic\\timeline\\timeline_all.txt"] = std::vector<uint8_t>(text.begin(), text.end());
+    DMATimelineQuery query; const auto page = fixture.dma.ReadTimeline(query);
+    STRATA_REQUIRE(page && page.value.events.size() == 2 && page.value.endOfFile);
+    STRATA_REQUIRE(page.value.headerLines == 2 && page.value.malformedLines == 1);
+    STRATA_REQUIRE(page.value.events[0].description.size() == 20000);
+    STRATA_REQUIRE(page.value.nextOffset == text.size());
+    query.limit = 1; const auto first = fixture.dma.ReadTimeline(query); query.offset = first.value.nextOffset;
+    const auto next = fixture.dma.ReadTimeline(query);
+    STRATA_REQUIRE(next && next.value.events.size() == 1 && next.value.events[0].offset == query.offset);
+    const std::string longLine(65538, 'x');
+    fixture.backend->vfsFiles["\\forensic\\timeline\\timeline_all.txt"] = std::vector<uint8_t>(longLine.begin(), longLine.end());
+    query.offset = 0; STRATA_REQUIRE_STATUS(fixture.dma.ReadTimeline(query).operation, DMAStatus::Unsupported);
+    const std::string invalidUtf8 = "2024-02-29 00:00:00 UTC PROC CRE 42 7 fffffffffffffff0 " + std::string(1, static_cast<char>(0xff)) + "\n";
+    fixture.backend->vfsFiles["\\forensic\\timeline\\timeline_all.txt"] = std::vector<uint8_t>(invalidUtf8.begin(), invalidUtf8.end());
+    const auto invalid = fixture.dma.ReadTimeline(query);
+    STRATA_REQUIRE(invalid && invalid.value.events.empty() && invalid.value.malformedLines == 1);
+}

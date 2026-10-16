@@ -216,6 +216,10 @@ MockVmmBackend::MockVmmBackend()
 
     vfsEntries = { { "mock.txt", 4, false }, { "dir", 0, true } };
     vfsFiles["\\mock.txt"] = { 'm', 'o', 'c', 'k' };
+    const std::string timeline = "2026-10-15 12:00:02 UTC PROC CRE 42 7 fffffffffffffff0 test.exe started\n"
+        "2026-10-15 12:00:01 UTC REG MOD 0 0 0000000000000000 HKLM\\Software\\Test\n"
+        "2026-10-15 12:00:00 UTC PROC DEL 42 7 fffffffffffffff0 test.exe stopped\n";
+    vfsFiles["\\forensic\\timeline\\timeline_all.txt"] = std::vector<uint8_t>(timeline.begin(), timeline.end());
     vfsFiles["\\misc\\procinfo\\progress_percent.txt"] = { '1', '0', '0' };
     const std::string dtb = "0000 0 0000000000abc000 0 test.exe\n";
     vfsFiles["\\misc\\procinfo\\dtb.txt"] =
@@ -584,10 +588,15 @@ DMAOperationResult MockVmmBackend::WriteRegistryHive(uint64_t,
     return DMAOperationResult::Success(size);
 }
 
-DMAOperationResult MockVmmBackend::ListVfs(const std::string&,
+DMAOperationResult MockVmmBackend::ListVfs(const std::string& path,
     std::vector<DMAVfsEntry>& output) const
 {
-    output = vfsEntries;
+    if (path == "\\forensic\\timeline" || path == "/forensic/timeline") {
+        output.clear();
+        const std::string prefix = "\\forensic\\timeline\\";
+        for (const auto& file : vfsFiles) if (file.first.compare(0, prefix.size(), prefix) == 0)
+            output.push_back({file.first.substr(prefix.size()), file.second.size(), false});
+    } else output = vfsEntries;
     return DMAOperationResult::Success();
 }
 

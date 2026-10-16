@@ -24,6 +24,9 @@
     <ClCompile Include="StrataDMA\DMA.Advanced.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="StrataDMA\DMA.Timeline.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="StrataDMA\DMA.Backend.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
