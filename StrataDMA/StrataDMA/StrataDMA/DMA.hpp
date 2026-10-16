@@ -225,6 +225,10 @@ public:
     static DMAResult<DMACompiledPattern> CompilePattern(
         const std::string& signature,
         const std::vector<DMAScanCapture>& captures = {});
+    // With finalChunk=false, retain bytes from consumedBytes for the next contiguous block.
+    static DMAResult<DMAStringSearchResult> ExtractStrings(
+        const std::vector<uint8_t>& buffer, const DMAStringSearchOptions& options = {},
+        uint64_t baseAddress = 0, bool finalChunk = true);
     static DMAResult<std::vector<DMAScanMatch>> ScanBufferAdvanced(
         const std::vector<uint8_t>& buffer, const DMACompiledPattern& pattern,
         uint64_t baseAddress = 0, const DMAScanOptions& options = {});

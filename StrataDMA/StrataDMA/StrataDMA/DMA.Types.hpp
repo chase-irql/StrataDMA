@@ -371,6 +371,28 @@ struct DMAScanOptions {
     bool transformFromFirstRelativeCapture = false;
 };
 
+enum class DMAStringEncoding { ASCII, UTF16LE };
+struct DMAStringSearchOptions {
+    DMAStringEncoding encoding = DMAStringEncoding::ASCII;
+    size_t minimumLength = 4;
+    size_t maximumLength = 4096;
+    size_t maximumResults = 4096;
+    std::string contains;
+    bool caseSensitive = true;
+};
+struct DMAStringMatch {
+    uint64_t address = 0;
+    size_t byteLength = 0;
+    size_t characters = 0;
+    std::string text;
+    bool truncated = false;
+};
+struct DMAStringSearchResult {
+    std::vector<DMAStringMatch> matches;
+    size_t consumedBytes = 0;
+    bool limited = false;
+};
+
 struct DMACompiledPatternByte {
     uint8_t value = 0;
     uint8_t mask = 0;

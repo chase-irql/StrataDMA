@@ -24,6 +24,29 @@ STRATA_TEST_CASE(compiled_patterns_validate_tokens_and_captures)
     STRATA_REQUIRE(compiled.value.bytes[2].mask == 0x00);
 }
 
+STRATA_TEST_CASE(string_extraction_retains_chunk_tails_unicode_and_limits)
+{
+    const std::vector<uint8_t> bytes{ 'H','e','l','l','o',0,'T','a','i','l' };
+    DMAStringSearchOptions options;
+    auto first = DMA::ExtractStrings(bytes, options, 0xffff800000001000, false);
+    STRATA_REQUIRE(first && first.value.matches.size() == 1);
+    STRATA_REQUIRE(first.value.matches[0].text == "Hello" && first.value.consumedBytes == 6);
+    const std::vector<uint8_t> tail{ 'T','a','i','l','e','n','d',0 };
+    auto last = DMA::ExtractStrings(tail, options, 0x1006);
+    STRATA_REQUIRE(last && last.value.matches[0].text == "Tailend");
+    options.maximumResults = 1;
+    STRATA_REQUIRE(DMA::ExtractStrings(bytes, options).value.consumedBytes == 5);
+    options.contains = "hello"; options.caseSensitive = false;
+    STRATA_REQUIRE(DMA::ExtractStrings(bytes, options).value.matches.size() == 1);
+    options = {}; options.encoding = DMAStringEncoding::UTF16LE; options.minimumLength = 2;
+    const std::vector<uint8_t> wide{ 'A',0,0x3d,0xd8,0x00,0xde,0,0 };
+    auto unicode = DMA::ExtractStrings(wide, options);
+    STRATA_REQUIRE(unicode && unicode.value.matches[0].text == "A\xf0\x9f\x98\x80");
+    const std::vector<uint8_t> incomplete{ 'A',0,0x3d,0xd8 };
+    STRATA_REQUIRE(DMA::ExtractStrings(incomplete, options, 0, false).value.consumedBytes == 0);
+    STRATA_REQUIRE(!DMA::ExtractStrings(wide, options, UINT64_MAX));
+}
+
 STRATA_TEST_CASE(advanced_scanning_supports_alignment_limits_and_nth_match)
 {
     auto pattern = DMA::CompilePattern("48 8? ?? 05");

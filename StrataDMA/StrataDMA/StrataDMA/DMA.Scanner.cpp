@@ -272,3 +272,83 @@ DMAResult<std::vector<DMAScanMatch>> DMA::ScanModuleAdvanced(
     result.operation = DMAOperationResult::Success();
     return result;
 }
+
+
+DMAResult<DMAStringSearchResult> DMA::ExtractStrings(
+    const std::vector<uint8_t>& buffer, const DMAStringSearchOptions& options,
+    uint64_t baseAddress, bool finalChunk)
+{
+    DMAResult<DMAStringSearchResult> result;
+    if ((options.encoding != DMAStringEncoding::ASCII && options.encoding != DMAStringEncoding::UTF16LE) ||
+        options.minimumLength == 0 || options.maximumLength < options.minimumLength ||
+        options.maximumLength > 4096 || options.maximumResults == 0 || options.maximumResults > 4096 ||
+        options.contains.size() > 256 || (!buffer.empty() && buffer.size() - 1 > UINT64_MAX - baseAddress)) {
+        result.operation = DMAOperationResult::Failure(DMAStatus::InvalidArgument, "Invalid string encoding, lengths, filter, result limit or address range.");
+        return result;
+    }
+    const bool wide = options.encoding == DMAStringEncoding::UTF16LE;
+    const size_t width = wide ? 2 : 1;
+    const auto folded = [](std::string value) {
+        for (auto& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return value;
+    };
+    const auto filter = options.caseSensitive ? options.contains : folded(options.contains);
+    const auto utf8 = [](uint32_t code) {
+        std::string text;
+        if (code < 0x80) text += static_cast<char>(code);
+        else if (code < 0x800) { text += static_cast<char>(0xc0 | (code >> 6)); text += static_cast<char>(0x80 | (code & 63)); }
+        else if (code < 0x10000) { text += static_cast<char>(0xe0 | (code >> 12)); text += static_cast<char>(0x80 | ((code >> 6) & 63)); text += static_cast<char>(0x80 | (code & 63)); }
+        else { text += static_cast<char>(0xf0 | (code >> 18)); text += static_cast<char>(0x80 | ((code >> 12) & 63)); text += static_cast<char>(0x80 | ((code >> 6) & 63)); text += static_cast<char>(0x80 | (code & 63)); }
+        return text;
+    };
+    struct Rune { uint32_t code = 0; size_t size = 0; bool printable = false; bool incomplete = false; };
+    const auto rune = [&](size_t at) {
+        Rune value; value.size = width;
+        if (buffer.size() - at < width) { value.incomplete = true; return value; }
+        value.code = buffer[at];
+        if (!wide) { value.printable = value.code >= 32 && value.code <= 126; return value; }
+        value.code |= static_cast<uint32_t>(buffer[at + 1]) << 8;
+        if (value.code >= 0xd800 && value.code <= 0xdbff) {
+            if (buffer.size() - at < 4) { value.incomplete = true; return value; }
+            const auto low = static_cast<uint32_t>(buffer[at + 2]) | (static_cast<uint32_t>(buffer[at + 3]) << 8);
+            if (low < 0xdc00 || low > 0xdfff) return value;
+            value.code = 0x10000 + ((value.code - 0xd800) << 10) + low - 0xdc00; value.size = 4;
+        } else if (value.code >= 0xdc00 && value.code <= 0xdfff) return value;
+        value.printable = value.code >= 32 && !(value.code >= 127 && value.code <= 159) &&
+            !(value.code >= 0xfdd0 && value.code <= 0xfdef) && (value.code & 0xffff) < 0xfffe;
+        return value;
+    };
+    size_t cursor = wide && baseAddress % 2 ? 1 : 0;
+    cursor = std::min(cursor, buffer.size());
+    while (cursor < buffer.size()) {
+        const size_t start = cursor;
+        size_t characters = 0; std::string full, preview; bool incomplete = false;
+        while (cursor < buffer.size() && characters < options.maximumLength) {
+            const auto value = rune(cursor);
+            if (value.incomplete) { incomplete = true; break; }
+            if (!value.printable) break;
+            const auto encoded = utf8(value.code); full += encoded;
+            if (characters < 256) preview += encoded;
+            characters++; cursor += value.size;
+        }
+        if (!finalChunk && characters < options.maximumLength && (cursor == buffer.size() || incomplete)) {
+            result.value.consumedBytes = start;
+            result.operation = DMAOperationResult::Success(start);
+            return result;
+        }
+        if (characters >= options.minimumLength &&
+            (filter.empty() || (options.caseSensitive ? full : folded(full)).find(filter) != std::string::npos)) {
+            result.value.matches.push_back({ baseAddress + start, cursor - start, characters, preview,
+                characters > 256 || characters == options.maximumLength });
+            if (result.value.matches.size() == options.maximumResults) {
+                result.value.consumedBytes = cursor; result.value.limited = cursor < buffer.size();
+                result.operation = DMAOperationResult::Success(cursor); return result;
+            }
+        }
+        if (characters == options.maximumLength) continue;
+        cursor = std::min(buffer.size(), cursor + width);
+    }
+    result.value.consumedBytes = buffer.size();
+    result.operation = DMAOperationResult::Success(buffer.size());
+    return result;
+}

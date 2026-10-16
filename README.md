@@ -473,6 +473,21 @@ and LeechCore components retain their upstream AGPLv3 and GPLv3 licenses; see
 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for versions, file scope, and
 source links.
 
+## String extraction
+
+`DMA::ExtractStrings(bytes, options, baseAddress, finalChunk)` extracts printable
+ASCII or word-aligned Unicode UTF-16LE strings, including surrogate pairs.
+Matches retain exact addresses, byte lengths and character counts, with previews
+up to 256 characters. Strings are split at `maximumLength` (up to 4096 characters).
+The optional contains filter applies to each piece; case-insensitive matching
+folds ASCII only. Result pages contain at most 4096 matches.
+
+For streaming, use `finalChunk=false` and retain bytes beginning at
+`result.value.consumedBytes`. Append the next contiguous block to that tail and
+advance the base by the consumed count. With a limited result page, resume at the
+same consumed offset. Flush with `finalChunk=true` at the end of a readable span;
+never join bytes across unreadable gaps. This static API requires no device.
+
 ## Pointer-chain traces
 
 `dma.ProcessContext(pid).TraceChain(base, offsets, pointerWidth)` returns owning
