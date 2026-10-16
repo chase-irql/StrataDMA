@@ -452,12 +452,23 @@ uint32_t DMA::GetWindowsBuild() const
     return static_cast<uint32_t>(build);
 }
 
+DMAOperationResult DMA::GetProcesses(std::vector<DMAProcessInfo>& processes) const
+{
+    processes.clear();
+    if (!IsInitialized())
+        return DMAOperationResult::Failure(DMAStatus::NotInitialized,
+            "Initialize DMA before listing processes.");
+    auto result = backend->GetProcesses(processes);
+    // MemProcFS includes retained terminated records in its all-process API.
+    processes.erase(std::remove_if(processes.begin(), processes.end(),
+        [](const DMAProcessInfo& process) { return process.state != 0; }), processes.end());
+    return result;
+}
+
 std::vector<DMAProcessInfo> DMA::GetProcesses() const
 {
     std::vector<DMAProcessInfo> result;
-    if (!IsInitialized())
-        return result;
-    backend->GetProcesses(result);
+    GetProcesses(result);
     return result;
 }
 

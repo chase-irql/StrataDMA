@@ -149,6 +149,29 @@ STRATA_TEST_CASE(process_discovery_and_expanded_metadata_are_exposed)
     STRATA_REQUIRE_STATUS(missing.operation, DMAStatus::NotFound);
 }
 
+STRATA_TEST_CASE(process_discovery_excludes_terminated_records)
+{
+    MockDmaFixture fixture;
+    std::vector<DMAProcessInfo> processes(1);
+    STRATA_REQUIRE_STATUS(fixture.dma.GetProcesses(processes), DMAStatus::NotInitialized);
+    STRATA_REQUIRE(processes.empty());
+    fixture.Initialize();
+    for (DWORD pid = 43; pid < 53; ++pid) {
+        auto exited = fixture.backend->processes.front();
+        exited.pid = pid;
+        exited.state = pid % 2 ? 1 : 4;
+        fixture.backend->processes.push_back(exited);
+    }
+    STRATA_REQUIRE(fixture.dma.GetProcesses(processes));
+    STRATA_REQUIRE(processes.size() == 1);
+    STRATA_REQUIRE(processes.front().pid == MockVmmBackend::TargetPid);
+    STRATA_REQUIRE(fixture.dma.FindProcessIds("TEST.EXE") == std::vector<DWORD>{ MockVmmBackend::TargetPid });
+    fixture.backend->processes.front().state = 4;
+    STRATA_REQUIRE(fixture.dma.GetProcesses().empty());
+    STRATA_REQUIRE(fixture.dma.FindProcessIds("test.exe").empty());
+    STRATA_REQUIRE(fixture.backend->processes.size() == 11);
+}
+
 STRATA_TEST_CASE(structured_reads_and_writes_report_complete_context)
 {
     MockDmaFixture fixture;

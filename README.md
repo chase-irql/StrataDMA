@@ -52,6 +52,11 @@ MemProcFS 5.16.5 and LeechCore headers plus Windows x64 import libraries.
 
 Use it only on systems and processes you are authorized to inspect.
 
+`DMA::GetProcesses()` and `FindProcessIds()` return running processes only,
+excluding MemProcFS's retained terminated records. The `GetProcesses(output)`
+overload preserves enumeration diagnostics. Low-level backend enumeration and
+explicit `GetProcessInfo(pid)` remain available for forensic metadata.
+
 ## Highlights
 
 - Configurable VMMDLL initialization with device URIs, memory maps, extra

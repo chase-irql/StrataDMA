@@ -83,7 +83,7 @@ DMAOperationResult DMA::InitKeyboard(int poll_ms, bool debug) {
     // ---------------------------------------------------------------
     if (Winver >= 22000) {
         std::vector<DMAProcessInfo> processes;
-        if (!backend->GetProcesses(processes)) {
+        if (!GetProcesses(processes)) {
             if (debug) printf("[InitKeyboard] FAIL: process enumeration failed\n");
             return InputFailure(DMAStatus::BackendError,
                 "Process enumeration failed.");

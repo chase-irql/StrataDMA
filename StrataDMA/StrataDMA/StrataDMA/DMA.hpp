@@ -116,6 +116,7 @@ public:
     void Detach();
     DMAOperationResult RefreshProcess();
     std::vector<DWORD> FindProcessIds(const std::string& processName) const;
+    DMAOperationResult GetProcesses(std::vector<DMAProcessInfo>& processes) const;
     std::vector<DMAProcessInfo> GetProcesses() const;
     DMAResult<DMAProcessInfo> GetProcessInfo(DWORD pid = 0) const;
     DMAResult<DMAInspectionTable> Inspect(DMAInspectionQuery query) const;
